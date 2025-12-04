@@ -142,21 +142,70 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
   const { usuario, password } = req.body;
+
   try {
     const db = await getDB();
     const [rows] = await db.execute('SELECT * FROM users WHERE usuario = ?', [usuario]);
     if (rows.length === 0) return res.status(401).json({ error: 'Usuario no encontrado' });
+
     const user = rows[0];
-    if (user.verificado === 0) return res.status(403).json({ error: 'Debes verificar tu correo antes de iniciar sesión' });
+
+    if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
+      const minutos = Math.ceil((new Date(user.lockedUntil) - new Date()) / 60000);
+      return res.status(403).json({ error: `Cuenta bloqueada. Intenta en ${minutos} minutos.` });
+    }
+
+    if (user.verificado === 0)
+      return res.status(403).json({ error: 'Debes verificar tu correo antes de iniciar sesión' });
+
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(401).json({ error: 'Contraseña incorrecta' });
-    const jwtToken = jwt.sign({ id: user.id, usuario: user.usuario, rol: user.rol, correo: user.correo }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ user: { id: user.id, nombre: user.nombre, usuario: user.usuario, rol: user.rol, correo: user.correo }, token: jwtToken });
+
+    if (!match) {
+      const intentos = user.failedAttempts + 1;
+      let lock = null;
+
+      if (intentos >= 3)
+        lock = new Date(Date.now() + 30 * 60 * 1000);
+
+      await db.execute(
+        'UPDATE users SET failedAttempts=?, lockedUntil=? WHERE id=?',
+        [intentos, lock, user.id]
+      );
+
+      if (intentos >= 3)
+        return res.status(403).json({ error: 'Cuenta bloqueada por 30 minutos' });
+
+      return res.status(401).json({ error: `Contraseña incorrecta. Intentos restantes: ${3 - intentos}` });
+    }
+
+    await db.execute(
+      'UPDATE users SET failedAttempts=0, lockedUntil=NULL WHERE id=?',
+      [user.id]
+    );
+
+    const jwtToken = jwt.sign(
+      { id: user.id, usuario: user.usuario, rol: user.rol, correo: user.correo },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      user: {
+        id: user.id,
+        nombre: user.nombre,
+        usuario: user.usuario,
+        rol: user.rol,
+        correo: user.correo
+      },
+      token: jwtToken
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error en login' });
   }
 });
+
 
 app.get('/api/verify-email', async (req, res) => {
   const token = req.query.token;
