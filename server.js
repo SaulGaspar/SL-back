@@ -56,47 +56,91 @@ function adminOnly(req, res, next) {
   next();
 }
 
-passport.use(new GoogleStrategy(
-  {
-    clientID: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: process.env.GOOGLE_CALLBACK_URL
-  },
-  async (accessToken, refreshToken, profile, done) => {
-    try {
-      const db = await getDB();
-      const correo = profile.emails[0].value;
-      const [rows] = await db.execute('SELECT * FROM users WHERE correo = ?', [correo]);
-      let user;
-      if (rows.length > 0) {
-        user = rows[0];
-      } else {
-        const tempPassword = generarPasswordAleatoria();
-        const hash = await bcrypt.hash(tempPassword, 10);
-        const [result] = await db.execute(
-          `INSERT INTO users (nombre, correo, usuario, password, rol, verificado, createdAt, updatedAt)
-           VALUES (?,?,?,?,?,1,NOW(),NOW())`,
-          [profile.displayName, correo, profile.id, hash, 'cliente']
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+
+      // Usa siempre la URL absoluta (Vercel exige URL pública)
+      callbackURL: "https://sportlike-backend.vercel.app/auth/google/callback"
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        console.log("🔵 Google callback recibido");
+        console.log("Profile:", profile);
+
+        const db = await getDB();
+        const correo = profile.emails?.[0]?.value;
+
+        if (!correo) {
+          console.error("❌ ERROR: Google no regresó correo.");
+          return done(new Error("No se pudo obtener el correo del usuario"), null);
+        }
+
+        // Buscar usuario por correo
+        const [rows] = await db.execute(
+          "SELECT * FROM users WHERE correo = ?",
+          [correo]
         );
-        user = {
-          id: result.insertId,
-          nombre: profile.displayName,
-          correo,
-          usuario: profile.id,
-          rol: 'cliente'
-        };
+
+        let user;
+
+        if (rows.length > 0) {
+          console.log("🟢 Usuario encontrado:", rows[0].id);
+          user = rows[0];
+        } else {
+          console.log("🟡 Usuario no existe, creando uno nuevo...");
+
+          const tempPassword = generarPasswordAleatoria();
+          const hash = await bcrypt.hash(tempPassword, 10);
+
+          const [result] = await db.execute(
+            `INSERT INTO users (nombre, correo, usuario, password, rol, verificado, createdAt, updatedAt)
+             VALUES (?,?,?,?,?,1,NOW(),NOW())`,
+            [
+              profile.displayName || "Usuario Google",
+              correo,
+              profile.id,
+              hash,
+              "cliente"
+            ]
+          );
+
+          user = {
+            id: result.insertId,
+            nombre: profile.displayName,
+            correo,
+            usuario: profile.id,
+            rol: "cliente"
+          };
+
+          console.log("🟢 Usuario creado:", user.id);
+        }
+
+        const token = jwt.sign(
+          {
+            id: user.id,
+            usuario: user.usuario,
+            rol: user.rol,
+            correo: user.correo,
+            nombre: user.nombre
+          },
+          JWT_SECRET,
+          { expiresIn: "7d" }
+        );
+
+        console.log("🔵 Login con Google completado");
+        done(null, token);
+
+      } catch (err) {
+        console.error("❌ ERROR en Google Strategy:", err);
+        done(err, null);
       }
-      const token = jwt.sign(
-        { id: user.id, usuario: user.usuario, rol: user.rol, correo: user.correo, nombre: user.nombre },
-        JWT_SECRET,
-        { expiresIn: '7d' }
-      );
-      done(null, token);
-    } catch (err) {
-      done(err, null);
     }
-  }
-));
+  )
+);
+
 
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 app.get('/auth/google/callback', passport.authenticate('google', { session: false }), (req, res) => {
