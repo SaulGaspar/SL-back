@@ -56,7 +56,7 @@ function adminOnly(req, res, next) {
   next();
 }
 
-// Reemplaza tu estrategia de Google actual con esta versión corregida:
+// Reemplaza TODA la sección de Google OAuth con esto:
 
 passport.use(new GoogleStrategy(
   {
@@ -65,44 +65,69 @@ passport.use(new GoogleStrategy(
     callbackURL: process.env.GOOGLE_CALLBACK_URL
   },
   async (accessToken, refreshToken, profile, done) => {
+    let db;
     try {
-      const db = await getDB();
+      db = await getDB();
       const correo = profile.emails[0].value;
+      
+      console.log('=== INICIO GOOGLE AUTH ===');
+      console.log('Correo:', correo);
+      console.log('Profile ID:', profile.id);
+      console.log('Display Name:', profile.displayName);
+      
+      // Buscar usuario existente
       const [rows] = await db.execute('SELECT * FROM users WHERE correo = ?', [correo]);
       let user;
       
       if (rows.length > 0) {
+        console.log('Usuario existente encontrado');
         user = rows[0];
       } else {
+        console.log('Creando nuevo usuario...');
+        
+        // Generar datos para nuevo usuario
         const tempPassword = generarPasswordAleatoria();
         const hash = await bcrypt.hash(tempPassword, 10);
         
-        // INSERT actualizado con los nuevos campos
+        // Intentar dividir el nombre
+        const nombreCompleto = profile.displayName || 'Usuario Google';
+        const partesNombre = nombreCompleto.split(' ');
+        const nombre = partesNombre[0];
+        const apellidoP = partesNombre[1] || 'Google';
+        const apellidoM = partesNombre[2] || null;
+        
+        console.log('Datos a insertar:', { nombre, apellidoP, apellidoM, correo });
+        
+        // INSERT con TODOS los campos
         const [result] = await db.execute(
           `INSERT INTO users (
-            nombre, correo, usuario, password, rol, verificado, 
-            createdAt, updatedAt, failedAttempts, lockedUntil,
-            apellidoP, apellidoM, fechaNac, telefono
-          ) VALUES (?,?,?,?,?,1,NOW(),NOW(),0,NULL,?,NULL,NULL,NULL)`,
+            nombre, apellidoP, apellidoM, fechaNac, correo, telefono,
+            usuario, password, rol, verificado, 
+            createdAt, updatedAt, failedAttempts, lockedUntil
+          ) VALUES (?,?,?,NULL,?,NULL,?,?,?,1,NOW(),NOW(),0,NULL)`,
           [
-            profile.displayName, 
-            correo, 
-            profile.id, 
-            hash, 
-            'cliente',
-            'Google User' // apellidoP obligatorio
+            nombre,
+            apellidoP,
+            apellidoM,
+            correo,
+            `google_${profile.id}`, // usuario único
+            hash,
+            'cliente'
           ]
         );
         
+        console.log('Usuario creado con ID:', result.insertId);
+        
         user = {
           id: result.insertId,
-          nombre: profile.displayName,
-          correo,
-          usuario: profile.id,
+          nombre: nombre,
+          correo: correo,
+          usuario: `google_${profile.id}`,
           rol: 'cliente'
         };
       }
       
+      // Generar token JWT
       const token = jwt.sign(
         { 
           id: user.id, 
@@ -115,13 +140,42 @@ passport.use(new GoogleStrategy(
         { expiresIn: '7d' }
       );
       
+      console.log('Token generado exitosamente');
+      console.log('=== FIN GOOGLE AUTH ===');
+      
       done(null, token);
+      
     } catch (err) {
-      console.error('Error en Google OAuth:', err);
+      console.error('❌ ERROR EN GOOGLE AUTH:');
+      console.error('Mensaje:', err.message);
+      console.error('Stack:', err.stack);
+      console.error('SQL Error Code:', err.code);
+      console.error('SQL Error Number:', err.errno);
       done(err, null);
     }
   }
 ));
+
+// Actualiza también el callback para mostrar errores:
+app.get('/auth/google/callback', 
+  passport.authenticate('google', { session: false, failureRedirect: '/auth/error' }), 
+  (req, res) => {
+    try {
+      const token = req.user;
+      console.log('✅ Callback exitoso, redirigiendo con token');
+      res.redirect(`${process.env.CLIENT_URL}/google-callback?token=${token}`);
+    } catch (err) {
+      console.error('❌ Error en callback:', err);
+      res.redirect(`${process.env.CLIENT_URL}/google-callback?error=auth_failed`);
+    }
+  }
+);
+
+// Añade esta ruta para capturar errores:
+app.get('/auth/error', (req, res) => {
+  console.error('❌ Error en autenticación de Google');
+  res.redirect(`${process.env.CLIENT_URL}/google-callback?error=auth_failed`);
+});
 
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 app.get('/auth/google/callback', passport.authenticate('google', { session: false }), (req, res) => {
