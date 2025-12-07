@@ -66,39 +66,18 @@ passport.use(new GoogleStrategy(
     try {
       const db = await getDB();
       const correo = profile.emails[0].value;
-
       const [rows] = await db.execute('SELECT * FROM users WHERE correo = ?', [correo]);
-
       let user;
-
       if (rows.length > 0) {
         user = rows[0];
       } else {
-
-        // Google NO da apellido paterno, así que ponemos algo por defecto
-        const apellidoP = profile.name?.familyName || "Google";
-        const apellidoM = profile.name?.givenName || null;
-
         const tempPassword = generarPasswordAleatoria();
         const hash = await bcrypt.hash(tempPassword, 10);
-
         const [result] = await db.execute(
-          `INSERT INTO users 
-          (nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password, rol, verificado, createdAt, updatedAt)
-           VALUES (?,?,?,?,?,?,?,?,?,1,NOW(),NOW())`,
-          [
-            profile.displayName,  
-            apellidoP,            
-            apellidoM,            
-            null,                 
-            correo,
-            null,                 
-            profile.id,
-            hash,
-            'cliente'
-          ]
+          `INSERT INTO users (nombre, correo, usuario, password, rol, verificado, createdAt, updatedAt)
+           VALUES (?,?,?,?,?,1,NOW(),NOW())`,
+          [profile.displayName, correo, profile.id, hash, 'cliente']
         );
-
         user = {
           id: result.insertId,
           nombre: profile.displayName,
@@ -107,28 +86,17 @@ passport.use(new GoogleStrategy(
           rol: 'cliente'
         };
       }
-
       const token = jwt.sign(
-        {
-          id: user.id,
-          usuario: user.usuario,
-          rol: user.rol,
-          correo: user.correo,
-          nombre: user.nombre
-        },
+        { id: user.id, usuario: user.usuario, rol: user.rol, correo: user.correo, nombre: user.nombre },
         JWT_SECRET,
         { expiresIn: '7d' }
       );
-
       done(null, token);
-
     } catch (err) {
-      console.error("ERROR GOOGLE AUTH:", err);
       done(err, null);
     }
   }
 ));
-
 
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 app.get('/auth/google/callback', passport.authenticate('google', { session: false }), (req, res) => {
