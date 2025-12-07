@@ -17,18 +17,17 @@ app.use(passport.initialize());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret';
 
-async function getDB() {
-  return mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
-    database: process.env.DB_NAME,
-    port: process.env.DB_PORT || 3306,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
-  });
-}
+// Crear el pool una sola vez
+const dbPool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
+  port: process.env.DB_PORT || 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
 
 function generarPasswordAleatoria(longitud = 10) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*';
@@ -64,80 +63,57 @@ passport.use(new GoogleStrategy(
   },
   async (accessToken, refreshToken, profile, done) => {
     try {
-
-      console.log("Google profile recibido:", profile); // <-- LOG EN VERCEL
-
-      const db = await getDB();
-
-      // VALIDAR EMAIL
-      const correo = profile.emails?.[0]?.value || null;
-      if (!correo) {
-        console.error("ERROR: Google no envió correo");
-        return done(new Error("No se recibió correo desde Google"), null);
-      }
-
-      // BUSCAR EN BD
-      const [rows] = await db.execute(
-        "SELECT * FROM users WHERE correo = ?",
-        [correo]
-      );
-
+      const correo = profile.emails[0].value;
+      const [rows] = await dbPool.execute('SELECT * FROM users WHERE correo = ?', [correo]);
+      
       let user;
-
       if (rows.length > 0) {
         user = rows[0];
       } else {
         const tempPassword = generarPasswordAleatoria();
         const hash = await bcrypt.hash(tempPassword, 10);
-
-        const [result] = await db.execute(
+        const [result] = await dbPool.execute(
           `INSERT INTO users (nombre, correo, usuario, password, rol, verificado, createdAt, updatedAt)
            VALUES (?,?,?,?,?,1,NOW(),NOW())`,
-          [
-            profile.displayName,
-            correo,
-            profile.id,
-            hash,
-            "cliente"
-          ]
+          [profile.displayName, correo, profile.id, hash, 'cliente']
         );
-
         user = {
           id: result.insertId,
           nombre: profile.displayName,
           correo,
           usuario: profile.id,
-          rol: "cliente"
+          rol: 'cliente'
         };
       }
-
-      const token = jwt.sign(
-        {
-          id: user.id,
-          usuario: user.usuario,
-          rol: user.rol,
-          correo: user.correo,
-          nombre: user.nombre
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: "7d" }
-      );
-
-      return done(null, token);
-
+      
+      // Pasar el objeto user completo en lugar del token
+      done(null, user);
     } catch (err) {
-      console.error("ERROR en estrategia de Google:", err);
-      return done(err, null);
+      console.error('Error en Google Strategy:', err);
+      done(err, null);
     }
   }
 ));
 
-
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
-app.get('/auth/google/callback', passport.authenticate('google', { session: false }), (req, res) => {
-  const token = req.user;
-  res.redirect(`${process.env.CLIENT_URL}/google-callback?token=${token}`);
-});
+
+app.get('/auth/google/callback', 
+  passport.authenticate('google', { session: false, failureRedirect: `${process.env.CLIENT_URL}/login?error=google_auth_failed` }), 
+  (req, res) => {
+    try {
+      // Generar el token aquí, después de la autenticación exitosa
+      const token = jwt.sign(
+        { id: req.user.id, usuario: req.user.usuario, rol: req.user.rol, correo: req.user.correo, nombre: req.user.nombre },
+        JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+      res.redirect(`${process.env.CLIENT_URL}/google-callback?token=${token}`);
+    } catch (err) {
+      console.error('Error generando token:', err);
+      res.redirect(`${process.env.CLIENT_URL}/login?error=token_generation_failed`);
+    }
+  }
+);
 
 app.get('/', (req, res) => res.send('Servidor SportLike funcionando correctamente'));
 
@@ -145,11 +121,10 @@ app.post('/api/register', async (req, res) => {
   const { nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password, rol } = req.body;
   if (!nombre || !apellidoP || !usuario || !correo || !password) return res.status(400).json({ error: 'Faltan campos requeridos' });
   try {
-    const db = await getDB();
-    const [existing] = await db.execute('SELECT id FROM users WHERE usuario = ? OR correo = ? OR telefono = ?', [usuario, correo, telefono || null]);
+    const [existing] = await dbPool.execute('SELECT id FROM users WHERE usuario = ? OR correo = ? OR telefono = ?', [usuario, correo, telefono || null]);
     if (existing.length > 0) return res.status(400).json({ error: 'Usuario, correo o teléfono ya registrado' });
     const hash = await bcrypt.hash(password, 10);
-    const [result] = await db.execute(
+    const [result] = await dbPool.execute(
       `INSERT INTO users (nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password, rol, verificado, createdAt, updatedAt)
        VALUES (?,?,?,?,?,?,?,?,?,0,NOW(),NOW())`,
       [nombre, apellidoP, apellidoM || null, fechaNac || null, correo, telefono || null, usuario, hash, rol || 'cliente']
@@ -179,8 +154,7 @@ app.post('/api/login', async (req, res) => {
   const { usuario, password } = req.body;
 
   try {
-    const db = await getDB();
-    const [rows] = await db.execute('SELECT * FROM users WHERE usuario = ?', [usuario]);
+    const [rows] = await dbPool.execute('SELECT * FROM users WHERE usuario = ?', [usuario]);
     if (rows.length === 0) return res.status(401).json({ error: 'Usuario no encontrado' });
 
     const user = rows[0];
@@ -202,7 +176,7 @@ app.post('/api/login', async (req, res) => {
       if (intentos >= 3)
         lock = new Date(Date.now() + 30 * 60 * 1000);
 
-      await db.execute(
+      await dbPool.execute(
         'UPDATE users SET failedAttempts=?, lockedUntil=? WHERE id=?',
         [intentos, lock, user.id]
       );
@@ -213,7 +187,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: `Contraseña incorrecta. Intentos restantes: ${3 - intentos}` });
     }
 
-    await db.execute(
+    await dbPool.execute(
       'UPDATE users SET failedAttempts=0, lockedUntil=NULL WHERE id=?',
       [user.id]
     );
@@ -241,14 +215,12 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-
 app.get('/api/verify-email', async (req, res) => {
   const token = req.query.token;
   if (!token) return res.status(400).send('Token inválido');
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const db = await getDB();
-    await db.execute('UPDATE users SET verificado = 1 WHERE id = ?', [decoded.id]);
+    await dbPool.execute('UPDATE users SET verificado = 1 WHERE id = ?', [decoded.id]);
     res.send('Correo verificado correctamente. Ahora puedes iniciar sesión.');
   } catch {
     res.status(400).send('Token inválido o expirado');
@@ -259,14 +231,13 @@ app.post('/api/forgot-password', async (req, res) => {
   const { correo } = req.body;
   if (!correo) return res.status(400).json({ error: 'Correo requerido' });
   try {
-    const db = await getDB();
-    const [users] = await db.execute('SELECT id, nombre FROM users WHERE correo = ?', [correo]);
+    const [users] = await dbPool.execute('SELECT id, nombre FROM users WHERE correo = ?', [correo]);
     if (users.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
     const userId = users[0].id;
     const nombre = users[0].nombre;
     const token = crypto.randomBytes(32).toString('hex');
     const expires = new Date(Date.now() + 3600000);
-    await db.execute('INSERT INTO Token (userId, token, expires, createdAt) VALUES (?, ?, ?, NOW())', [userId, token, expires]);
+    await dbPool.execute('INSERT INTO Token (userId, token, expires, createdAt) VALUES (?, ?, ?, NOW())', [userId, token, expires]);
     const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
       port: process.env.EMAIL_PORT,
@@ -292,14 +263,13 @@ app.post('/api/reset-password', async (req, res) => {
   if (!token || !password) return res.status(400).json({ error: 'Token y contraseña requeridos' });
   if (password.length < 6) return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
   try {
-    const db = await getDB();
-    const [rows] = await db.execute('SELECT userId, expires FROM Token WHERE token = ?', [token]);
+    const [rows] = await dbPool.execute('SELECT userId, expires FROM Token WHERE token = ?', [token]);
     if (rows.length === 0) return res.status(400).json({ error: 'Token inválido' });
     const tokenData = rows[0];
     if (new Date(tokenData.expires) < new Date()) return res.status(400).json({ error: 'Token expirado' });
     const hash = await bcrypt.hash(password, 10);
-    await db.execute('UPDATE users SET password = ? WHERE id = ?', [hash, tokenData.userId]);
-    await db.execute('DELETE FROM Token WHERE token = ?', [token]);
+    await dbPool.execute('UPDATE users SET password = ? WHERE id = ?', [hash, tokenData.userId]);
+    await dbPool.execute('DELETE FROM Token WHERE token = ?', [token]);
     res.json({ message: 'Contraseña restablecida correctamente' });
   } catch (err) {
     console.error(err);
@@ -311,10 +281,9 @@ app.post('/api/update-profile', authMiddleware, async (req, res) => {
   const { nombre, apellidoP, apellidoM, telefono, usuario } = req.body;
   if (!nombre || !apellidoP || !usuario) return res.status(400).json({ error: 'Faltan campos requeridos' });
   try {
-    const db = await getDB();
-    const [exists] = await db.execute('SELECT id FROM users WHERE (usuario = ? OR telefono = ?) AND id != ?', [usuario, telefono || null, req.user.id]);
+    const [exists] = await dbPool.execute('SELECT id FROM users WHERE (usuario = ? OR telefono = ?) AND id != ?', [usuario, telefono || null, req.user.id]);
     if (exists.length > 0) return res.status(400).json({ error: 'Usuario o teléfono ya registrado' });
-    await db.execute(
+    await dbPool.execute(
       `UPDATE users SET nombre=?, apellidoP=?, apellidoM=?, telefono=?, usuario=?, updatedAt=NOW() WHERE id=?`,
       [nombre, apellidoP, apellidoM || null, telefono || null, usuario, req.user.id]
     );
@@ -329,13 +298,12 @@ app.post('/api/update-password', authMiddleware, async (req, res) => {
   const { actual, nueva } = req.body;
   if (!actual || !nueva) return res.status(400).json({ error: 'Debes enviar ambas contraseñas' });
   try {
-    const db = await getDB();
-    const [rows] = await db.execute('SELECT password FROM users WHERE id=?', [req.user.id]);
+    const [rows] = await dbPool.execute('SELECT password FROM users WHERE id=?', [req.user.id]);
     if (rows.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
     const match = await bcrypt.compare(actual, rows[0].password);
     if (!match) return res.status(401).json({ error: 'La contraseña actual es incorrecta' });
     const hash = await bcrypt.hash(nueva, 10);
-    await db.execute('UPDATE users SET password=?, updatedAt=NOW() WHERE id=?', [hash, req.user.id]);
+    await dbPool.execute('UPDATE users SET password=?, updatedAt=NOW() WHERE id=?', [hash, req.user.id]);
     res.json({ message: 'Contraseña actualizada correctamente' });
   } catch (err) {
     console.error(err);
@@ -345,8 +313,7 @@ app.post('/api/update-password', authMiddleware, async (req, res) => {
 
 app.get('/api/users', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const db = await getDB();
-    const [rows] = await db.execute('SELECT id, nombre, apellidoP, apellidoM, correo, usuario, rol FROM users');
+    const [rows] = await dbPool.execute('SELECT id, nombre, apellidoP, apellidoM, correo, usuario, rol FROM users');
     res.json(rows);
   } catch (err) {
     console.error(err);
