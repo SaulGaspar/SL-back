@@ -318,6 +318,7 @@ app.get('/api/users', authMiddleware, adminOnly, async (req, res) => {
     res.status(500).json({ error: 'Error al obtener usuarios' });
   }
 });
+
 app.get("/api/me", authMiddleware, async (req, res) => {
   try {
     const db = await getDB();
@@ -336,6 +337,98 @@ app.get("/api/me", authMiddleware, async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Error obteniendo usuario" });
   }
+});
+
+app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
+
+  try {
+
+    const db = await getDB();
+
+    const { from, to, branch } = req.query;
+
+    let where = [];
+    let params = [];
+
+    if (from) {
+      where.push("o.fecha >= ?");
+      params.push(from);
+    }
+
+    if (to) {
+      where.push("o.fecha <= ?");
+      params.push(to);
+    }
+
+    if (branch && branch !== "all") {
+      where.push("o.sucursal = ?");
+      params.push(branch);
+    }
+
+    const whereSQL = where.length ? "WHERE " + where.join(" AND ") : "";
+
+    // ============================
+    // 📈 Ventas por día
+    // ============================
+
+    const [timeline] = await db.execute(`
+      SELECT 
+        DATE(o.fecha) AS dia,
+        SUM(o.total) AS total
+      FROM orders o
+      ${whereSQL}
+      GROUP BY dia
+      ORDER BY dia;
+    `, params);
+
+    // ============================
+    // 🏪 Ventas por sucursal
+    // ============================
+
+    const [branches] = await db.execute(`
+      SELECT 
+        o.sucursal,
+        SUM(o.total) AS ingresos
+      FROM orders o
+      ${whereSQL}
+      GROUP BY o.sucursal
+      ORDER BY ingresos DESC;
+    `, params);
+
+    // ============================
+    // 🔥 Top productos
+    // ============================
+
+    const [topProducts] = await db.execute(`
+      SELECT 
+        p.nombre,
+        SUM(oi.cantidad) AS vendidos,
+        SUM(oi.subtotal) AS ingresos
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+      JOIN orders o ON o.id = oi.order_id
+      ${whereSQL}
+      GROUP BY p.nombre
+      ORDER BY vendidos DESC
+      LIMIT 10;
+    `, params);
+
+    res.json({
+      salesTimeline: timeline,
+      branchRanking: branches,
+      topProducts
+    });
+
+  } catch (err) {
+
+    console.error("Admin dashboard error:", err);
+
+    res.status(500).json({
+      error: "Error generando dashboard admin"
+    });
+
+  }
+
 });
 
 
