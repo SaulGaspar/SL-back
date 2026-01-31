@@ -431,6 +431,165 @@ app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
 
 });
 
+// ================================
+// 🟦 ADMIN - PRODUCTOS
+// ================================
+
+app.get("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+
+    const [rows] = await db.execute(`
+      SELECT id, nombre, descripcion, precio, categoria, imagen, activo
+      FROM products
+      ORDER BY id DESC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error obteniendo productos" });
+  }
+});
+
+
+// ➕ Crear producto
+app.post("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
+
+  const { nombre, descripcion, precio, categoria, imagen } = req.body;
+
+  if (!nombre || !precio)
+    return res.status(400).json({ error: "Nombre y precio obligatorios" });
+
+  try {
+    const db = await getDB();
+
+    await db.execute(`
+      INSERT INTO products
+      (nombre, descripcion, precio, categoria, imagen, activo)
+      VALUES (?,?,?,?,?,1)
+    `, [nombre, descripcion, precio, categoria, imagen]);
+
+    res.json({ message: "Producto creado correctamente" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error creando producto" });
+  }
+});
+
+
+// ✏️ Editar producto
+app.put("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) => {
+
+  const { nombre, descripcion, precio, categoria, imagen, activo } = req.body;
+
+  try {
+    const db = await getDB();
+
+    await db.execute(`
+      UPDATE products
+      SET nombre=?, descripcion=?, precio=?, categoria=?, imagen=?, activo=?, updatedAt=NOW()
+      WHERE id=?
+    `, [nombre, descripcion, precio, categoria, imagen, activo, req.params.id]);
+
+    res.json({ message: "Producto actualizado" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error actualizando producto" });
+  }
+});
+
+
+// ❌ Desactivar producto
+app.delete("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) => {
+
+  try {
+    const db = await getDB();
+
+    await db.execute(`
+      UPDATE products
+      SET activo = 0
+      WHERE id = ?
+    `, [req.params.id]);
+
+    res.json({ message: "Producto desactivado" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error eliminando producto" });
+  }
+});
+
+// ================================
+// 🟩 ADMIN - INVENTARIO
+// ================================
+
+app.get("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => {
+
+  const { branch } = req.query;
+
+  try {
+
+    const db = await getDB();
+
+    let sql = `
+      SELECT 
+        i.id,
+        b.nombre AS sucursal,
+        p.nombre AS producto,
+        i.stock,
+        i.min_stock,
+        i.branch_id,
+        i.product_id
+      FROM inventory i
+      JOIN products p ON p.id = i.product_id
+      JOIN branches b ON b.id = i.branch_id
+    `;
+
+    let params = [];
+
+    if (branch) {
+      sql += " WHERE i.branch_id = ?";
+      params.push(branch);
+    }
+
+    const [rows] = await db.execute(sql, params);
+
+    res.json(rows);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error obteniendo inventario" });
+  }
+
+});
+
+
+// ✏️ Actualizar stock
+app.put("/api/admin/inventory/:id", authMiddleware, adminOnly, async (req, res) => {
+
+  const { stock, min_stock } = req.body;
+
+  try {
+
+    const db = await getDB();
+
+    await db.execute(`
+      UPDATE inventory
+      SET stock=?, min_stock=?
+      WHERE id=?
+    `, [stock, min_stock, req.params.id]);
+
+    res.json({ message: "Inventario actualizado" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error actualizando inventario" });
+  }
+
+});
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Servidor corriendo en http://localhost:${PORT}`));
