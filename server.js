@@ -318,6 +318,26 @@ app.get('/api/users', authMiddleware, adminOnly, async (req, res) => {
     res.status(500).json({ error: 'Error al obtener usuarios' });
   }
 });
+app.get("/api/me", authMiddleware, async (req, res) => {
+  try {
+    const db = await getDB();
+
+    const [rows] = await db.execute(
+      "SELECT id, nombre, usuario, correo, rol FROM users WHERE id = ?",
+      [req.user.id]
+    );
+
+    if (rows.length === 0)
+      return res.status(404).json({ error: "Usuario no existe" });
+
+    res.json(rows[0]);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error obteniendo usuario" });
+  }
+});
+
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Servidor corriendo en http://localhost:${PORT}`));
