@@ -87,10 +87,23 @@ passport.use(new GoogleStrategy(
         const apellidoP = partesNombre[1] || 'Google'; // Apellido por defecto si no existe
         const apellidoM = partesNombre[2] || ''; // Puede estar vacío
         
+        // Usar el correo (parte antes del @) como nombre de usuario
+        const usuarioBase = correo.split('@')[0];
+        
+        // Verificar si el usuario ya existe y agregar número si es necesario
+        let usuario = usuarioBase;
+        let contador = 1;
+        while (true) {
+          const [existente] = await db.execute('SELECT id FROM users WHERE usuario = ?', [usuario]);
+          if (existente.length === 0) break;
+          usuario = `${usuarioBase}${contador}`;
+          contador++;
+        }
+        
         const [result] = await db.execute(
           `INSERT INTO users (nombre, apellidoP, apellidoM, correo, usuario, password, rol, verificado, createdAt, updatedAt)
            VALUES (?,?,?,?,?,?,?,1,NOW(),NOW())`,
-          [nombre, apellidoP, apellidoM, correo, profile.id, hash, 'cliente']
+          [nombre, apellidoP, apellidoM, correo, usuario, hash, 'cliente']
         );
         
         user = {
@@ -99,7 +112,7 @@ passport.use(new GoogleStrategy(
           apellidoP: apellidoP,
           apellidoM: apellidoM,
           correo,
-          usuario: profile.id,
+          usuario: usuario,
           rol: 'cliente'
         };
       }
