@@ -67,38 +67,68 @@ passport.use(new GoogleStrategy(
       const db = await getDB();
       const correo = profile.emails[0].value;
       const [rows] = await db.execute('SELECT * FROM users WHERE correo = ?', [correo]);
+      
       let user;
+      
       if (rows.length > 0) {
+        // Usuario ya existe
         user = rows[0];
       } else {
+        // Crear nuevo usuario desde Google
         const tempPassword = generarPasswordAleatoria();
         const hash = await bcrypt.hash(tempPassword, 10);
+        
+        // Separar nombre completo en partes
+        const nombreCompleto = profile.displayName || 'Usuario';
+        const partesNombre = nombreCompleto.trim().split(' ');
+        
+        // Asignar nombre y apellidos
+        const nombre = partesNombre[0] || 'Usuario';
+        const apellidoP = partesNombre[1] || 'Google'; // Apellido por defecto si no existe
+        const apellidoM = partesNombre[2] || ''; // Puede estar vacío
+        
         const [result] = await db.execute(
-          `INSERT INTO users (nombre, correo, usuario, password, rol, verificado, createdAt, updatedAt)
-           VALUES (?,?,?,?,?,1,NOW(),NOW())`,
-          [profile.displayName, correo, profile.id, hash, 'cliente']
+          `INSERT INTO users (nombre, apellidoP, apellidoM, correo, usuario, password, rol, verificado, createdAt, updatedAt)
+           VALUES (?,?,?,?,?,?,?,1,NOW(),NOW())`,
+          [nombre, apellidoP, apellidoM, correo, profile.id, hash, 'cliente']
         );
+        
         user = {
           id: result.insertId,
-          nombre: profile.displayName,
+          nombre: nombre,
+          apellidoP: apellidoP,
+          apellidoM: apellidoM,
           correo,
           usuario: profile.id,
           rol: 'cliente'
         };
       }
+      
+      // Crear token JWT
       const token = jwt.sign(
-        { id: user.id, usuario: user.usuario, rol: user.rol, correo: user.correo, nombre: user.nombre },
+        { 
+          id: user.id, 
+          usuario: user.usuario, 
+          rol: user.rol, 
+          correo: user.correo, 
+          nombre: user.nombre,
+          apellidoP: user.apellidoP,
+          apellidoM: user.apellidoM
+        },
         JWT_SECRET,
         { expiresIn: '7d' }
       );
+      
       done(null, token);
     } catch (err) {
+      console.error('Error en Google OAuth:', err);
       done(err, null);
     }
   }
 ));
 
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+
 app.get('/auth/google/callback', passport.authenticate('google', { session: false }), (req, res) => {
   const token = req.user;
   res.redirect(`${process.env.CLIENT_URL}/google-callback?token=${token}`);
