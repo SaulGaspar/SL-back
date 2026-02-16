@@ -22,10 +22,23 @@ const app = express();
 app.use(helmet());
 
 // CORS configurado correctamente
+const allowedOrigins = [
+  "https://sportlikeapps.netlify.app",
+  "http://localhost:1234"
+];
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:1234',
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true); // permitir Postman/server
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("CORS no permitido"));
+    }
+  },
   credentials: true
 }));
+
 
 // Rate limiting para prevenir brute force
 const loginLimiter = rateLimit({
