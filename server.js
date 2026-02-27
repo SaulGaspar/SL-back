@@ -13,6 +13,7 @@ const helmet = require('helmet');
 require('dotenv').config();
 
 const app = express();
+app.set('trust proxy', 1);
 
 // ================================
 // 🛡️ SEGURIDAD - MIDDLEWARES
@@ -2082,7 +2083,7 @@ app.get('/api/admin/orders/stats/summary', authMiddleware, adminOnly, async (req
 // 🚀 START SERVER
 // ================================
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 1234;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
   console.log(`🔒 Seguridad: Rate limiting activado`);
