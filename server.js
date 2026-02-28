@@ -25,7 +25,8 @@ app.use(helmet());
 // CORS configurado correctamente
 const allowedOrigins = [
   "https://sportlikeapps.netlify.app",
-  "http://localhost:1234"
+  "http://localhost:1234",
+   "https://sl-back.vercel.app"
 ];
 
 app.use(cors({
@@ -2080,13 +2081,59 @@ app.get('/api/admin/orders/stats/summary', authMiddleware, adminOnly, async (req
 });
 
 // ================================
-// 🚀 START SERVER
+// 📊 ADMIN - ESTADÍSTICAS DE PRODUCTOS (NUEVO)
+// Agregar este endpoint ANTES del bloque "🚀 START SERVER"
+// en server.js, junto a los demás endpoints de /api/admin/products
 // ================================
 
-const PORT = process.env.PORT || 1234;
-app.listen(PORT, () => {
-  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-  console.log(`🔒 Seguridad: Rate limiting activado`);
-  console.log(`🛡️ Helmet protections activadas`);
-  console.log(`📦 Endpoints de admin mejorados disponibles`);
+// 📊 RESUMEN ESTADÍSTICO DE PRODUCTOS
+app.get("/api/admin/products/stats/summary", authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+
+    const [stats] = await db.execute(`
+      SELECT
+        COUNT(*)                                                      AS total_productos,
+        SUM(CASE WHEN activo = 1 THEN 1 ELSE 0 END)                  AS activos,
+        SUM(CASE WHEN activo = 0 THEN 1 ELSE 0 END)                  AS inactivos,
+        COUNT(DISTINCT categoria)                                      AS total_categorias,
+        AVG(precio)                                                    AS precio_promedio,
+        MIN(precio)                                                    AS precio_minimo,
+        MAX(precio)                                                    AS precio_maximo
+      FROM products
+    `);
+
+    const [porCategoria] = await db.execute(`
+      SELECT
+        categoria,
+        COUNT(*) AS productos,
+        SUM(CASE WHEN activo = 1 THEN 1 ELSE 0 END) AS activos
+      FROM products
+      WHERE categoria IS NOT NULL AND categoria != ''
+      GROUP BY categoria
+      ORDER BY productos DESC
+      LIMIT 10
+    `);
+
+    res.json({
+      ...stats[0],
+      porCategoria
+    });
+  } catch (err) {
+    console.error("Error obteniendo estadísticas de productos:", err);
+    res.status(500).json({ error: "Error obteniendo estadísticas de productos" });
+  }
 });
+
+// ================================
+// 🚀 START SERVER
+// ================================
+// ✅ PON esto:
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 1234;
+  app.listen(PORT, () => {
+    console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+  });
+}
+
+module.exports = app;
