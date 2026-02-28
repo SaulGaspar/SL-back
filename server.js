@@ -19,14 +19,12 @@ app.set('trust proxy', 1);
 // 🛡️ SEGURIDAD - MIDDLEWARES
 // ================================
 
-// Helmet: protege contra vulnerabilidades comunes
 app.use(helmet());
 
-// CORS configurado correctamente
 const allowedOrigins = [
   "https://sportlikeapps.netlify.app",
   "http://localhost:1234",
-   "https://sl-back.vercel.app"
+  "https://sl-back.vercel.app"
 ];
 
 app.use(cors({
@@ -42,7 +40,7 @@ app.use(cors({
 }));
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, 
+  windowMs: 15 * 60 * 1000,
   max: 5,
   message: { error: 'Demasiados intentos de login. Intenta en 15 minutos.' }
 });
@@ -92,8 +90,8 @@ async function getDB() {
 // ================================
 
 function sanitizeInput(input) {
-if (typeof input !== 'string') return input;
-return input.trim().replace(/['"`;\\]/g, '');
+  if (typeof input !== 'string') return input;
+  return input.trim().replace(/['"`;\\]/g, '');
 }
 
 function validateEmail(email) {
@@ -102,13 +100,11 @@ function validateEmail(email) {
 }
 
 function validatePassword(password) {
-  // Mínimo 8 caracteres, 1 mayúscula, 1 minúscula, 1 número, 1 especial
   const re = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
   return re.test(password);
 }
 
 function validateUsername(usuario) {
-  // Solo letras, números, guiones y guiones bajos, 4-20 caracteres
   const re = /^[a-zA-Z0-9_-]{4,20}$/;
   return re.test(usuario);
 }
@@ -129,17 +125,15 @@ function generarPasswordAleatoria(longitud = 12) {
 function authMiddleware(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: 'No token proporcionado' });
-  
+
   const token = auth.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Token malformado' });
-  
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-  
     if (!decoded.id || !decoded.rol) {
       return res.status(401).json({ error: 'Token inválido' });
     }
-    
     req.user = decoded;
     next();
   } catch (err) {
@@ -169,66 +163,62 @@ passport.use(new GoogleStrategy(
     try {
       const db = await getDB();
       const correo = profile.emails[0].value;
-    
+
       if (!validateEmail(correo)) {
         return done(new Error('Email inválido'), null);
       }
-      
+
       const [rows] = await db.execute('SELECT * FROM users WHERE correo = ?', [correo]);
-      
+
       let user;
-      
+
       if (rows.length > 0) {
         user = rows[0];
       } else {
         const tempPassword = generarPasswordAleatoria();
         const hash = await bcrypt.hash(tempPassword, 10);
-        
+
         const nombreCompleto = profile.displayName || 'Usuario';
         const partesNombre = nombreCompleto.trim().split(' ');
-        
+
         const nombre = sanitizeInput(partesNombre[0] || 'Usuario');
         const apellidoP = sanitizeInput(partesNombre[1] || 'Google');
         const apellidoM = sanitizeInput(partesNombre[2] || '');
-        
+
         const usuarioBase = correo.split('@')[0];
         let usuario = sanitizeInput(usuarioBase);
         let contador = 1;
-        
+
         while (true) {
           const [existente] = await db.execute('SELECT id FROM users WHERE usuario = ?', [usuario]);
           if (existente.length === 0) break;
           usuario = sanitizeInput(`${usuarioBase}${contador}`);
           contador++;
         }
-        
+
         const [result] = await db.execute(
           `INSERT INTO users (nombre, apellidoP, apellidoM, correo, usuario, password, rol, verificado, createdAt, updatedAt)
            VALUES (?,?,?,?,?,?,?,1,NOW(),NOW())`,
           [nombre, apellidoP, apellidoM, correo, usuario, hash, 'cliente']
         );
-        
+
         user = {
           id: result.insertId,
-          nombre: nombre,
-          apellidoP: apellidoP,
-          apellidoM: apellidoM,
-          correo,
-          usuario: usuario,
-          rol: 'cliente'
+          nombre, apellidoP, apellidoM, correo,
+          usuario, rol: 'cliente'
         };
       }
-    
+
       if (user.rol === 'admin') {
         user.rol = 'cliente';
       }
-      
+
       const token = jwt.sign(
-        { 
-          id: user.id, 
-          usuario: user.usuario, 
+        {
+          id: user.id,
+          usuario: user.usuario,
           rol: user.rol,
-          correo: user.correo, 
+          correo: user.correo,
           nombre: user.nombre,
           apellidoP: user.apellidoP,
           apellidoM: user.apellidoM
@@ -236,7 +226,7 @@ passport.use(new GoogleStrategy(
         JWT_SECRET,
         { expiresIn: '7d' }
       );
-      
+
       done(null, token);
     } catch (err) {
       console.error('Error en Google OAuth:', err);
@@ -268,66 +258,66 @@ app.post('/api/register', async (req, res) => {
   if (!nombre || !apellidoP || !usuario || !correo || !password) {
     return res.status(400).json({ error: 'Faltan campos requeridos' });
   }
-  
+
   if (!validateEmail(correo)) {
     return res.status(400).json({ error: 'Email inválido' });
   }
-  
+
   if (!validateUsername(usuario)) {
     return res.status(400).json({ error: 'Usuario inválido. Debe tener 4-20 caracteres alfanuméricos' });
   }
-  
+
   if (!validatePassword(password)) {
     return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres, una mayúscula, una minúscula, un número y un carácter especial' });
   }
 
   const rolFinal = 'cliente';
-  
+
   try {
     const db = await getDB();
-  
+
     const nombreSafe = sanitizeInput(nombre);
     const apellidoPSafe = sanitizeInput(apellidoP);
     const apellidoMSafe = apellidoM ? sanitizeInput(apellidoM) : null;
     const usuarioSafe = sanitizeInput(usuario);
     const correoSafe = sanitizeInput(correo);
     const telefonoSafe = telefono ? sanitizeInput(telefono) : null;
-    
+
     const [existing] = await db.execute(
-      'SELECT id FROM users WHERE usuario = ? OR correo = ? OR telefono = ?', 
+      'SELECT id FROM users WHERE usuario = ? OR correo = ? OR telefono = ?',
       [usuarioSafe, correoSafe, telefonoSafe]
     );
-    
+
     if (existing.length > 0) {
       return res.status(400).json({ error: 'Usuario, correo o teléfono ya registrado' });
     }
-    
+
     const hash = await bcrypt.hash(password, 12);
-    
+
     const [result] = await db.execute(
       `INSERT INTO users (nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password, rol, verificado, createdAt, updatedAt)
        VALUES (?,?,?,?,?,?,?,?,?,0,NOW(),NOW())`,
       [nombreSafe, apellidoPSafe, apellidoMSafe, fechaNac || null, correoSafe, telefonoSafe, usuarioSafe, hash, rolFinal]
     );
-    
+
     const token = jwt.sign({ id: result.insertId, correo: correoSafe }, JWT_SECRET, { expiresIn: '1d' });
-    
+
     const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
       port: process.env.EMAIL_PORT,
       secure: false,
       auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
     });
-    
+
     const verifyLink = `${process.env.CLIENT_URL}/verify-email?token=${token}`;
-    
+
     await transporter.sendMail({
       from: process.env.EMAIL_FROM,
       to: correoSafe,
       subject: 'Verifica tu correo - SportLike',
       html: `<p>Hola ${nombreSafe},</p><p>Para activar tu cuenta, haz clic en el siguiente enlace:</p><a href="${verifyLink}">Verificar correo</a><p>Si no creaste esta cuenta, ignora este correo.</p>`
     });
-    
+
     res.json({ message: 'Usuario registrado correctamente. Revisa tu correo para activar tu cuenta.' });
   } catch (err) {
     console.error('Error en registro:', err);
@@ -336,26 +326,26 @@ app.post('/api/register', async (req, res) => {
 });
 
 // ================================
-// 🔐 LOGIN - VERSION SEGURA
+// 🔐 LOGIN
 // ================================
 
 app.post('/api/login', async (req, res) => {
   const { usuario, password } = req.body;
-  
+
   if (!usuario || !password) {
     return res.status(400).json({ error: 'Usuario y contraseña requeridos' });
   }
-  
+
   const usuarioSafe = sanitizeInput(usuario);
 
   try {
     const db = await getDB();
-    
+
     const [rows] = await db.execute(
-      'SELECT id, nombre, apellidoP, apellidoM, usuario, correo, password, rol, verificado, failedAttempts, lockedUntil FROM users WHERE usuario = ?', 
+      'SELECT id, nombre, apellidoP, apellidoM, usuario, correo, password, rol, verificado, failedAttempts, lockedUntil FROM users WHERE usuario = ?',
       [usuarioSafe]
     );
-    
+
     if (rows.length === 0) {
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
@@ -400,9 +390,9 @@ app.post('/api/login', async (req, res) => {
     );
 
     const jwtToken = jwt.sign(
-      { 
-        id: user.id, 
-        usuario: user.usuario, 
+      {
+        id: user.id,
+        usuario: user.usuario,
         rol: user.rol,
         correo: user.correo,
         nombre: user.nombre
@@ -439,7 +429,7 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/verify-email', async (req, res) => {
   const token = req.query.token;
   if (!token) return res.status(400).send('Token inválido');
-  
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const db = await getDB();
@@ -456,47 +446,47 @@ app.get('/api/verify-email', async (req, res) => {
 
 app.post('/api/forgot-password', async (req, res) => {
   const { correo } = req.body;
-  
+
   if (!correo || !validateEmail(correo)) {
     return res.status(400).json({ error: 'Email inválido' });
   }
-  
+
   const correoSafe = sanitizeInput(correo);
-  
+
   try {
     const db = await getDB();
     const [users] = await db.execute('SELECT id, nombre FROM users WHERE correo = ?', [correoSafe]);
-    
+
     if (users.length === 0) {
       return res.json({ message: 'Si el correo existe, recibirás un enlace de recuperación' });
     }
-    
+
     const userId = users[0].id;
     const nombre = users[0].nombre;
     const token = crypto.randomBytes(32).toString('hex');
     const expires = new Date(Date.now() + 3600000);
-    
+
     await db.execute(
-      'INSERT INTO Token (userId, token, expires, createdAt) VALUES (?, ?, ?, NOW())', 
+      'INSERT INTO Token (userId, token, expires, createdAt) VALUES (?, ?, ?, NOW())',
       [userId, token, expires]
     );
-    
+
     const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
       port: process.env.EMAIL_PORT,
       secure: false,
       auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
     });
-    
+
     const resetLink = `${process.env.CLIENT_URL}/reset-password?token=${token}`;
-    
+
     await transporter.sendMail({
       from: process.env.EMAIL_FROM,
       to: correoSafe,
       subject: 'Recuperación de contraseña - SportLike',
       html: `<p>Hola ${nombre},</p><p>Has solicitado restablecer tu contraseña. Haz clic en el siguiente enlace (válido por 1 hora):</p><a href="${resetLink}">Restablecer contraseña</a><p>Si no solicitaste esto, ignora este correo.</p>`
     });
-    
+
     res.json({ message: 'Si el correo existe, recibirás un enlace de recuperación' });
   } catch (err) {
     console.error('Error en forgot-password:', err);
@@ -506,33 +496,33 @@ app.post('/api/forgot-password', async (req, res) => {
 
 app.post('/api/reset-password', async (req, res) => {
   const { token, password } = req.body;
-  
+
   if (!token || !password) {
     return res.status(400).json({ error: 'Token y contraseña requeridos' });
   }
-  
+
   if (!validatePassword(password)) {
     return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres, una mayúscula, una minúscula, un número y un carácter especial' });
   }
-  
+
   try {
     const db = await getDB();
     const [rows] = await db.execute('SELECT userId, expires FROM Token WHERE token = ?', [token]);
-    
+
     if (rows.length === 0) {
       return res.status(400).json({ error: 'Token inválido' });
     }
-    
+
     const tokenData = rows[0];
-    
+
     if (new Date(tokenData.expires) < new Date()) {
       return res.status(400).json({ error: 'Token expirado' });
     }
-    
+
     const hash = await bcrypt.hash(password, 12);
     await db.execute('UPDATE users SET password = ? WHERE id = ?', [hash, tokenData.userId]);
     await db.execute('DELETE FROM Token WHERE token = ?', [token]);
-    
+
     res.json({ message: 'Contraseña restablecida correctamente' });
   } catch (err) {
     console.error('Error en reset-password:', err);
@@ -546,38 +536,38 @@ app.post('/api/reset-password', async (req, res) => {
 
 app.post('/api/update-profile', authMiddleware, async (req, res) => {
   const { nombre, apellidoP, apellidoM, telefono, usuario } = req.body;
-  
+
   if (!nombre || !apellidoP || !usuario) {
     return res.status(400).json({ error: 'Faltan campos requeridos' });
   }
-  
+
   if (!validateUsername(usuario)) {
     return res.status(400).json({ error: 'Usuario inválido' });
   }
-  
+
   const nombreSafe = sanitizeInput(nombre);
   const apellidoPSafe = sanitizeInput(apellidoP);
   const apellidoMSafe = apellidoM ? sanitizeInput(apellidoM) : null;
   const usuarioSafe = sanitizeInput(usuario);
   const telefonoSafe = telefono ? sanitizeInput(telefono) : null;
-  
+
   try {
     const db = await getDB();
-    
+
     const [exists] = await db.execute(
-      'SELECT id FROM users WHERE (usuario = ? OR telefono = ?) AND id != ?', 
+      'SELECT id FROM users WHERE (usuario = ? OR telefono = ?) AND id != ?',
       [usuarioSafe, telefonoSafe, req.user.id]
     );
-    
+
     if (exists.length > 0) {
       return res.status(400).json({ error: 'Usuario o teléfono ya registrado' });
     }
-    
+
     await db.execute(
       `UPDATE users SET nombre=?, apellidoP=?, apellidoM=?, telefono=?, usuario=?, updatedAt=NOW() WHERE id=?`,
       [nombreSafe, apellidoPSafe, apellidoMSafe, telefonoSafe, usuarioSafe, req.user.id]
     );
-    
+
     res.json({ message: 'Perfil actualizado correctamente' });
   } catch (err) {
     console.error('Error actualizando perfil:', err);
@@ -587,32 +577,32 @@ app.post('/api/update-profile', authMiddleware, async (req, res) => {
 
 app.post('/api/update-password', authMiddleware, async (req, res) => {
   const { actual, nueva } = req.body;
-  
+
   if (!actual || !nueva) {
     return res.status(400).json({ error: 'Debes enviar ambas contraseñas' });
   }
-  
+
   if (!validatePassword(nueva)) {
     return res.status(400).json({ error: 'La nueva contraseña no cumple los requisitos de seguridad' });
   }
-  
+
   try {
     const db = await getDB();
     const [rows] = await db.execute('SELECT password FROM users WHERE id=?', [req.user.id]);
-    
+
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
-    
+
     const match = await bcrypt.compare(actual, rows[0].password);
-    
+
     if (!match) {
       return res.status(401).json({ error: 'La contraseña actual es incorrecta' });
     }
-    
+
     const hash = await bcrypt.hash(nueva, 12);
     await db.execute('UPDATE users SET password=?, updatedAt=NOW() WHERE id=?', [hash, req.user.id]);
-    
+
     res.json({ message: 'Contraseña actualizada correctamente' });
   } catch (err) {
     console.error('Error actualizando contraseña:', err);
@@ -659,7 +649,7 @@ app.get("/api/me", authMiddleware, async (req, res) => {
 // ================================
 
 app.get("/api/products", async (req, res) => {
-  const { q, categoria, marca } = req.query; // ← añadido marca
+  const { q, categoria, marca } = req.query;
 
   try {
     const db = await getDB();
@@ -673,10 +663,13 @@ app.get("/api/products", async (req, res) => {
         p.precio,
         p.categoria,
         p.imagen,
+        p.talla,
+        p.colores,
         COALESCE(SUM(i.stock), 0) AS stock_total
       FROM products p
       LEFT JOIN inventory i ON i.product_id = p.id
       WHERE p.activo = 1
+
     `;
 
     const params = [];
@@ -691,7 +684,7 @@ app.get("/api/products", async (req, res) => {
       params.push(categoria);
     }
 
-    if (marca) { // ← nuevo filtro por marca
+    if (marca) {
       sql += " AND p.marca = ?";
       params.push(marca);
     }
@@ -722,7 +715,7 @@ app.get("/api/categories", async (req, res) => {
   }
 });
 
-// Marcas públicas ← nuevo endpoint
+// Marcas públicas
 app.get("/api/marcas", async (req, res) => {
   try {
     const db = await getDB();
@@ -738,12 +731,11 @@ app.get("/api/marcas", async (req, res) => {
   }
 });
 
-
 // ================================
 // ADMIN - PRODUCTOS
 // ================================
 
-// 📋 OBTENER TODOS LOS PRODUCTOS (CON STOCK TOTAL)
+// 📋 OBTENER TODOS LOS PRODUCTOS
 app.get("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -755,7 +747,9 @@ app.get("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
         p.descripcion, 
         p.precio, 
         p.categoria, 
-        p.imagen, 
+        p.imagen,
+        p.talla,
+        p.colores,
         p.activo,
         p.createdAt,
         p.updatedAt,
@@ -813,9 +807,9 @@ app.get("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) =
   }
 });
 
-// ➕ CREAR PRODUCTO (CON INVENTARIO INICIAL)
+// ➕ CREAR PRODUCTO
 app.post("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
-  const { nombre, marca, descripcion, precio, categoria, imagen, inventario } = req.body; // ← añadido marca
+  const { nombre, marca, descripcion, precio, categoria, imagen, talla, colores, inventario } = req.body;
 
   if (!nombre || !precio) {
     return res.status(400).json({ error: "Nombre y precio obligatorios" });
@@ -825,19 +819,21 @@ app.post("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
     return res.status(400).json({ error: "El precio no puede ser negativo" });
   }
 
-  const nombreSafe = sanitizeInput(nombre);
-  const marcaSafe = marca ? sanitizeInput(marca) : null; // ← nuevo
+  const nombreSafe      = sanitizeInput(nombre);
+  const marcaSafe       = marca       ? sanitizeInput(marca)       : null;
   const descripcionSafe = descripcion ? sanitizeInput(descripcion) : null;
-  const categoriaSafe = categoria ? sanitizeInput(categoria) : null;
+  const categoriaSafe   = categoria   ? sanitizeInput(categoria)   : null;
+  const tallaSafe       = talla       ? sanitizeInput(talla)       : null;
+  const coloresSafe     = colores     ? sanitizeInput(colores)     : null;
 
   try {
     const db = await getDB();
-    
+
     const [result] = await db.execute(`
       INSERT INTO products
-      (nombre, marca, descripcion, precio, categoria, imagen, activo, createdAt, updatedAt)
-      VALUES (?,?,?,?,?,?,1,NOW(),NOW())
-    `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen]); // ← añadido marcaSafe
+      (nombre, marca, descripcion, precio, categoria, imagen, talla, colores, activo, createdAt, updatedAt)
+      VALUES (?,?,?,?,?,?,?,?,1,NOW(),NOW())
+    `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe]);
 
     const productId = result.insertId;
 
@@ -854,10 +850,7 @@ app.post("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
     }
 
     console.log(`✅ Producto creado: ${nombreSafe} (ID: ${productId}) por usuario ${req.user.usuario}`);
-    res.json({ 
-      message: "Producto creado correctamente",
-      productId: productId
-    });
+    res.json({ message: "Producto creado correctamente", productId });
   } catch (err) {
     console.error('Error creando producto:', err);
     res.status(500).json({ error: "Error creando producto" });
@@ -866,7 +859,7 @@ app.post("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
 
 // ✏️ ACTUALIZAR PRODUCTO
 app.put("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) => {
-  const { nombre, marca, descripcion, precio, categoria, imagen, activo } = req.body; // ← añadido marca
+  const { nombre, marca, descripcion, precio, categoria, imagen, talla, colores, activo } = req.body;
 
   if (!nombre || precio === undefined) {
     return res.status(400).json({ error: "Nombre y precio son obligatorios" });
@@ -876,25 +869,27 @@ app.put("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) =
     return res.status(400).json({ error: "El precio no puede ser negativo" });
   }
 
-  const nombreSafe = sanitizeInput(nombre);
-  const marcaSafe = marca ? sanitizeInput(marca) : null; // ← nuevo
+  const nombreSafe      = sanitizeInput(nombre);
+  const marcaSafe       = marca       ? sanitizeInput(marca)       : null;
   const descripcionSafe = descripcion ? sanitizeInput(descripcion) : null;
-  const categoriaSafe = categoria ? sanitizeInput(categoria) : null;
+  const categoriaSafe   = categoria   ? sanitizeInput(categoria)   : null;
+  const tallaSafe       = talla       ? sanitizeInput(talla)       : null;
+  const coloresSafe     = colores     ? sanitizeInput(colores)     : null;
 
   try {
     const db = await getDB();
-    
+
     const [exists] = await db.execute('SELECT id FROM products WHERE id = ?', [req.params.id]);
-    
+
     if (exists.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
     await db.execute(`
       UPDATE products
-      SET nombre=?, marca=?, descripcion=?, precio=?, categoria=?, imagen=?, activo=?, updatedAt=NOW()
+      SET nombre=?, marca=?, descripcion=?, precio=?, categoria=?, imagen=?, talla=?, colores=?, activo=?, updatedAt=NOW()
       WHERE id=?
-    `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, activo, req.params.id]); // ← añadido marcaSafe
+    `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe, activo, req.params.id]);
 
     console.log(`✅ Producto actualizado: ID ${req.params.id} por usuario ${req.user.usuario}`);
     res.json({ message: "Producto actualizado correctamente" });
@@ -908,17 +903,15 @@ app.put("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) =
 app.delete("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
-    
+
     const [exists] = await db.execute('SELECT id, nombre FROM products WHERE id = ?', [req.params.id]);
-    
+
     if (exists.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
     await db.execute(`
-      UPDATE products
-      SET activo = 0, updatedAt = NOW()
-      WHERE id = ?
+      UPDATE products SET activo = 0, updatedAt = NOW() WHERE id = ?
     `, [req.params.id]);
 
     console.log(`⚠️ Producto desactivado: ${exists[0].nombre} (ID: ${req.params.id}) por usuario ${req.user.usuario}`);
@@ -933,17 +926,15 @@ app.delete("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res
 app.patch("/api/admin/products/:id/reactivate", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
-    
+
     const [exists] = await db.execute('SELECT id, nombre FROM products WHERE id = ?', [req.params.id]);
-    
+
     if (exists.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
     await db.execute(`
-      UPDATE products
-      SET activo = 1, updatedAt = NOW()
-      WHERE id = ?
+      UPDATE products SET activo = 1, updatedAt = NOW() WHERE id = ?
     `, [req.params.id]);
 
     console.log(`✅ Producto reactivado: ${exists[0].nombre} (ID: ${req.params.id}) por usuario ${req.user.usuario}`);
@@ -954,13 +945,13 @@ app.patch("/api/admin/products/:id/reactivate", authMiddleware, adminOnly, async
   }
 });
 
-// 🗑️ ELIMINAR PERMANENTEMENTE (HARD DELETE)
+// 🗑️ ELIMINAR PERMANENTEMENTE
 app.delete("/api/admin/products/:id/permanent", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
-    
+
     const [exists] = await db.execute('SELECT id, nombre FROM products WHERE id = ?', [req.params.id]);
-    
+
     if (exists.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
@@ -976,7 +967,7 @@ app.delete("/api/admin/products/:id/permanent", authMiddleware, adminOnly, async
   }
 });
 
-// 📊 OBTENER CATEGORÍAS DISPONIBLES (ADMIN)
+// 📊 CATEGORÍAS DISPONIBLES (ADMIN)
 app.get("/api/admin/categories", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -984,8 +975,7 @@ app.get("/api/admin/categories", authMiddleware, adminOnly, async (req, res) => 
       SELECT DISTINCT categoria AS nombre, COUNT(*) AS productos
       FROM products
       WHERE categoria IS NOT NULL AND categoria != ''
-      GROUP BY categoria
-      ORDER BY categoria
+      GROUP BY categoria ORDER BY categoria
     `);
     res.json(rows);
   } catch (err) {
@@ -994,7 +984,7 @@ app.get("/api/admin/categories", authMiddleware, adminOnly, async (req, res) => 
   }
 });
 
-// 📊 OBTENER MARCAS DISPONIBLES (ADMIN) ← nuevo endpoint
+// 📊 MARCAS DISPONIBLES (ADMIN)
 app.get("/api/admin/marcas", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1002,8 +992,7 @@ app.get("/api/admin/marcas", authMiddleware, adminOnly, async (req, res) => {
       SELECT DISTINCT marca AS nombre, COUNT(*) AS productos
       FROM products
       WHERE marca IS NOT NULL AND marca != ''
-      GROUP BY marca
-      ORDER BY marca
+      GROUP BY marca ORDER BY marca
     `);
     res.json(rows);
   } catch (err) {
@@ -1014,11 +1003,11 @@ app.get("/api/admin/marcas", authMiddleware, adminOnly, async (req, res) => {
 
 // 🔍 BUSCAR PRODUCTOS (ADMIN)
 app.get("/api/admin/products/search", authMiddleware, adminOnly, async (req, res) => {
-  const { q, categoria, marca, activo } = req.query; // ← añadido marca
+  const { q, categoria, marca, activo } = req.query;
 
   try {
     const db = await getDB();
-    
+
     let sql = `
       SELECT 
         p.id, 
@@ -1027,14 +1016,16 @@ app.get("/api/admin/products/search", authMiddleware, adminOnly, async (req, res
         p.descripcion, 
         p.precio, 
         p.categoria, 
-        p.imagen, 
+        p.imagen,
+        p.talla,
+        p.colores,
         p.activo,
         COALESCE(SUM(i.stock), 0) AS stock_total
       FROM products p
       LEFT JOIN inventory i ON i.product_id = p.id
       WHERE 1=1
     `;
-    
+
     const params = [];
 
     if (q) {
@@ -1047,7 +1038,7 @@ app.get("/api/admin/products/search", authMiddleware, adminOnly, async (req, res
       params.push(categoria);
     }
 
-    if (marca) { // ← nuevo filtro
+    if (marca) {
       sql += " AND p.marca = ?";
       params.push(marca);
     }
@@ -1079,7 +1070,7 @@ app.put("/api/admin/products/:id/inventory", authMiddleware, adminOnly, async (r
     const db = await getDB();
 
     const [exists] = await db.execute('SELECT id FROM products WHERE id = ?', [req.params.id]);
-    
+
     if (exists.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
@@ -1102,9 +1093,8 @@ app.put("/api/admin/products/:id/inventory", authMiddleware, adminOnly, async (r
   }
 });
 
-
 // ================================
-// 📦 ADMIN - INVENTARIO (MEJORADO)
+// 📦 ADMIN - INVENTARIO
 // ================================
 
 app.get("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => {
@@ -1188,10 +1178,7 @@ app.get("/api/admin/inventory/stats", authMiddleware, adminOnly, async (req, res
       ORDER BY valor_inventario DESC
     `);
 
-    res.json({
-      general: stats[0],
-      porSucursal: porSucursal
-    });
+    res.json({ general: stats[0], porSucursal });
   } catch (err) {
     console.error('Error obteniendo estadísticas de inventario:', err);
     res.status(500).json({ error: "Error obteniendo estadísticas" });
@@ -1211,7 +1198,7 @@ app.put("/api/admin/inventory/:id", authMiddleware, adminOnly, async (req, res) 
 
   try {
     const db = await getDB();
-    
+
     const [exists] = await db.execute(`
       SELECT i.id, p.nombre AS producto, b.nombre AS sucursal
       FROM inventory i
@@ -1225,9 +1212,7 @@ app.put("/api/admin/inventory/:id", authMiddleware, adminOnly, async (req, res) 
     }
 
     await db.execute(`
-      UPDATE inventory
-      SET stock=?, min_stock=?
-      WHERE id=?
+      UPDATE inventory SET stock=?, min_stock=? WHERE id=?
     `, [stock, min_stock || 10, req.params.id]);
 
     console.log(`✅ Inventario actualizado: ${exists[0].producto} en ${exists[0].sucursal} por usuario ${req.user.usuario}`);
@@ -1253,7 +1238,7 @@ app.post("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => 
     const db = await getDB();
 
     const [product] = await db.execute('SELECT id, nombre, activo FROM products WHERE id = ?', [product_id]);
-    
+
     if (product.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
@@ -1263,7 +1248,7 @@ app.post("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => 
     }
 
     const [branch] = await db.execute('SELECT id, nombre FROM branches WHERE id = ?', [branch_id]);
-    
+
     if (branch.length === 0) {
       return res.status(404).json({ error: "Sucursal no encontrada" });
     }
@@ -1277,8 +1262,7 @@ app.post("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => 
     }
 
     await db.execute(`
-      INSERT INTO inventory (product_id, branch_id, stock, min_stock)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO inventory (product_id, branch_id, stock, min_stock) VALUES (?, ?, ?, ?)
     `, [product_id, branch_id, stock, min_stock || 10]);
 
     console.log(`✅ Inventario creado: ${product[0].nombre} en ${branch[0].nombre} por usuario ${req.user.usuario}`);
@@ -1332,7 +1316,6 @@ app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req,
 
   try {
     const db = await getDB();
-
     await db.execute('START TRANSACTION');
 
     try {
@@ -1344,13 +1327,8 @@ app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req,
         WHERE i.product_id = ? AND i.branch_id = ?
       `, [product_id, from_branch_id]);
 
-      if (origen.length === 0) {
-        throw new Error("No existe inventario en la sucursal origen");
-      }
-
-      if (origen[0].stock < cantidad) {
-        throw new Error(`Stock insuficiente en ${origen[0].sucursal}. Disponible: ${origen[0].stock}`);
-      }
+      if (origen.length === 0) throw new Error("No existe inventario en la sucursal origen");
+      if (origen[0].stock < cantidad) throw new Error(`Stock insuficiente en ${origen[0].sucursal}. Disponible: ${origen[0].stock}`);
 
       const [destino] = await db.execute(`
         SELECT i.id, b.nombre AS sucursal
@@ -1359,24 +1337,16 @@ app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req,
         WHERE i.product_id = ? AND i.branch_id = ?
       `, [product_id, to_branch_id]);
 
-      await db.execute(`
-        UPDATE inventory SET stock = stock - ? WHERE id = ?
-      `, [cantidad, origen[0].id]);
+      await db.execute(`UPDATE inventory SET stock = stock - ? WHERE id = ?`, [cantidad, origen[0].id]);
 
       if (destino.length > 0) {
-        await db.execute(`
-          UPDATE inventory SET stock = stock + ? WHERE id = ?
-        `, [cantidad, destino[0].id]);
+        await db.execute(`UPDATE inventory SET stock = stock + ? WHERE id = ?`, [cantidad, destino[0].id]);
       } else {
-        await db.execute(`
-          INSERT INTO inventory (product_id, branch_id, stock, min_stock)
-          VALUES (?, ?, ?, 10)
-        `, [product_id, to_branch_id, cantidad]);
+        await db.execute(`INSERT INTO inventory (product_id, branch_id, stock, min_stock) VALUES (?, ?, ?, 10)`, [product_id, to_branch_id, cantidad]);
       }
 
       await db.execute('COMMIT');
-
-      console.log(`✅ Transferencia completada: ${cantidad} unidades de ${origen[0].producto} de ${origen[0].sucursal} a ${destino[0]?.sucursal || 'nueva sucursal'} por usuario ${req.user.usuario}`);
+      console.log(`✅ Transferencia completada: ${cantidad} unidades de ${origen[0].producto} por usuario ${req.user.usuario}`);
       res.json({ message: "Transferencia completada exitosamente" });
 
     } catch (error) {
@@ -1399,12 +1369,7 @@ app.get("/api/admin/branches", authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
     const [rows] = await db.execute(`
       SELECT 
-        b.id,
-        b.nombre,
-        b.direccion,
-        b.telefono,
-        b.activo,
-        b.createdAt,
+        b.id, b.nombre, b.direccion, b.telefono, b.activo, b.createdAt,
         COUNT(DISTINCT i.product_id) AS productos,
         COALESCE(SUM(i.stock), 0) AS stock_total
       FROM branches b
@@ -1426,22 +1391,21 @@ app.post("/api/admin/branches", authMiddleware, adminOnly, async (req, res) => {
     return res.status(400).json({ error: "Nombre y dirección obligatorios" });
   }
 
-  const nombreSafe = sanitizeInput(nombre);
+  const nombreSafe    = sanitizeInput(nombre);
   const direccionSafe = sanitizeInput(direccion);
-  const telefonoSafe = telefono ? sanitizeInput(telefono) : null;
+  const telefonoSafe  = telefono ? sanitizeInput(telefono) : null;
 
   try {
     const db = await getDB();
 
     const [exists] = await db.execute('SELECT id FROM branches WHERE nombre = ?', [nombreSafe]);
-    
+
     if (exists.length > 0) {
       return res.status(400).json({ error: "Ya existe una sucursal con ese nombre" });
     }
 
     await db.execute(`
-      INSERT INTO branches (nombre, direccion, telefono, activo, createdAt)
-      VALUES (?, ?, ?, 1, NOW())
+      INSERT INTO branches (nombre, direccion, telefono, activo, createdAt) VALUES (?, ?, ?, 1, NOW())
     `, [nombreSafe, direccionSafe, telefonoSafe]);
 
     console.log(`✅ Sucursal creada: ${nombreSafe} por usuario ${req.user.usuario}`);
@@ -1459,23 +1423,21 @@ app.put("/api/admin/branches/:id", authMiddleware, adminOnly, async (req, res) =
     return res.status(400).json({ error: "Nombre y dirección obligatorios" });
   }
 
-  const nombreSafe = sanitizeInput(nombre);
+  const nombreSafe    = sanitizeInput(nombre);
   const direccionSafe = sanitizeInput(direccion);
-  const telefonoSafe = telefono ? sanitizeInput(telefono) : null;
+  const telefonoSafe  = telefono ? sanitizeInput(telefono) : null;
 
   try {
     const db = await getDB();
 
     const [exists] = await db.execute('SELECT id FROM branches WHERE id = ?', [req.params.id]);
-    
+
     if (exists.length === 0) {
       return res.status(404).json({ error: "Sucursal no encontrada" });
     }
 
     await db.execute(`
-      UPDATE branches
-      SET nombre=?, direccion=?, telefono=?, activo=?
-      WHERE id=?
+      UPDATE branches SET nombre=?, direccion=?, telefono=?, activo=? WHERE id=?
     `, [nombreSafe, direccionSafe, telefonoSafe, activo, req.params.id]);
 
     console.log(`✅ Sucursal actualizada: ID ${req.params.id} por usuario ${req.user.usuario}`);
@@ -1491,17 +1453,15 @@ app.delete("/api/admin/branches/:id", authMiddleware, adminOnly, async (req, res
     const db = await getDB();
 
     const [exists] = await db.execute('SELECT id, nombre FROM branches WHERE id = ?', [req.params.id]);
-    
+
     if (exists.length === 0) {
       return res.status(404).json({ error: "Sucursal no encontrada" });
     }
 
     const [inventory] = await db.execute('SELECT COUNT(*) as total FROM inventory WHERE branch_id = ?', [req.params.id]);
-    
+
     if (inventory[0].total > 0) {
-      return res.status(400).json({ 
-        error: "No se puede eliminar una sucursal con inventario. Elimine o transfiera el inventario primero." 
-      });
+      return res.status(400).json({ error: "No se puede eliminar una sucursal con inventario. Elimine o transfiera el inventario primero." });
     }
 
     await db.execute('UPDATE branches SET activo = 0 WHERE id = ?', [req.params.id]);
@@ -1514,9 +1474,8 @@ app.delete("/api/admin/branches/:id", authMiddleware, adminOnly, async (req, res
   }
 });
 
-
 // ================================
-// 👥 ADMIN - USUARIOS (MEJORADO)
+// 👥 ADMIN - USUARIOS
 // ================================
 
 app.get('/api/admin/users', authMiddleware, adminOnly, async (req, res) => {
@@ -1524,31 +1483,22 @@ app.get('/api/admin/users', authMiddleware, adminOnly, async (req, res) => {
 
   try {
     const db = await getDB();
-    
+
     let sql = `
       SELECT 
         id, nombre, apellidoP, apellidoM, correo, telefono,
         usuario, rol, verificado, failedAttempts, lockedUntil, createdAt, updatedAt
-      FROM users
-      WHERE 1=1
+      FROM users WHERE 1=1
     `;
 
     const params = [];
 
-    if (rol && rol !== 'all') {
-      sql += " AND rol = ?";
-      params.push(rol);
-    }
-
-    if (verificado !== undefined) {
-      sql += " AND verificado = ?";
-      params.push(verificado);
-    }
-
+    if (rol && rol !== 'all') { sql += " AND rol = ?"; params.push(rol); }
+    if (verificado !== undefined) { sql += " AND verificado = ?"; params.push(verificado); }
     if (search) {
       sql += " AND (nombre LIKE ? OR apellidoP LIKE ? OR usuario LIKE ? OR correo LIKE ?)";
-      const searchTerm = `%${search}%`;
-      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+      const s = `%${search}%`;
+      params.push(s, s, s, s);
     }
 
     sql += " ORDER BY createdAt DESC";
@@ -1565,11 +1515,9 @@ app.get('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute(`
-      SELECT 
-        id, nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, rol, 
-        verificado, failedAttempts, lockedUntil, createdAt, updatedAt
-      FROM users 
-      WHERE id = ?
+      SELECT id, nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, rol, 
+             verificado, failedAttempts, lockedUntil, createdAt, updatedAt
+      FROM users WHERE id = ?
     `, [req.params.id]);
 
     if (rows.length === 0) {
@@ -1577,17 +1525,10 @@ app.get('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
     }
 
     const [orders] = await db.execute(`
-      SELECT id, total, fecha, estado, sucursal
-      FROM orders
-      WHERE user_id = ?
-      ORDER BY fecha DESC
-      LIMIT 10
+      SELECT id, total, fecha, estado, sucursal FROM orders WHERE user_id = ? ORDER BY fecha DESC LIMIT 10
     `, [req.params.id]);
 
-    res.json({
-      user: rows[0],
-      orders: orders
-    });
+    res.json({ user: rows[0], orders });
   } catch (err) {
     console.error('Error obteniendo usuario:', err);
     res.status(500).json({ error: 'Error al obtener usuario' });
@@ -1609,34 +1550,26 @@ app.put('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
     return res.status(400).json({ error: 'Rol inválido' });
   }
 
-  const nombreSafe = sanitizeInput(nombre);
+  const nombreSafe    = sanitizeInput(nombre);
   const apellidoPSafe = sanitizeInput(apellidoP);
   const apellidoMSafe = apellidoM ? sanitizeInput(apellidoM) : null;
-  const usuarioSafe = sanitizeInput(usuario);
-  const telefonoSafe = telefono ? sanitizeInput(telefono) : null;
+  const usuarioSafe   = sanitizeInput(usuario);
+  const telefonoSafe  = telefono ? sanitizeInput(telefono) : null;
 
   try {
     const db = await getDB();
 
     const [exists] = await db.execute('SELECT id FROM users WHERE id = ?', [req.params.id]);
-    
-    if (exists.length === 0) {
-      return res.status(404).json({ error: 'Usuario no encontrado' });
-    }
+    if (exists.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
     const [duplicates] = await db.execute(`
-      SELECT id FROM users 
-      WHERE (usuario = ? OR telefono = ?) AND id != ?
+      SELECT id FROM users WHERE (usuario = ? OR telefono = ?) AND id != ?
     `, [usuarioSafe, telefonoSafe, req.params.id]);
 
-    if (duplicates.length > 0) {
-      return res.status(400).json({ error: 'Usuario o teléfono ya registrado' });
-    }
+    if (duplicates.length > 0) return res.status(400).json({ error: 'Usuario o teléfono ya registrado' });
 
     await db.execute(`
-      UPDATE users 
-      SET nombre=?, apellidoP=?, apellidoM=?, telefono=?, usuario=?, rol=?, verificado=?, updatedAt=NOW()
-      WHERE id=?
+      UPDATE users SET nombre=?, apellidoP=?, apellidoM=?, telefono=?, usuario=?, rol=?, verificado=?, updatedAt=NOW() WHERE id=?
     `, [nombreSafe, apellidoPSafe, apellidoMSafe, telefonoSafe, usuarioSafe, rol || 'cliente', verificado !== undefined ? verificado : 1, req.params.id]);
 
     console.log(`✅ Usuario actualizado: ${usuarioSafe} (ID: ${req.params.id}) por admin ${req.user.usuario}`);
@@ -1656,16 +1589,9 @@ app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) =
     }
 
     const [exists] = await db.execute('SELECT id, usuario FROM users WHERE id = ?', [req.params.id]);
-    
-    if (exists.length === 0) {
-      return res.status(404).json({ error: 'Usuario no encontrado' });
-    }
+    if (exists.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
-    await db.execute(`
-      UPDATE users 
-      SET verificado = 0, updatedAt = NOW()
-      WHERE id = ?
-    `, [req.params.id]);
+    await db.execute(`UPDATE users SET verificado = 0, updatedAt = NOW() WHERE id = ?`, [req.params.id]);
 
     console.log(`⚠️ Usuario desactivado: ${exists[0].usuario} (ID: ${req.params.id}) por admin ${req.user.usuario}`);
     res.json({ message: 'Usuario desactivado correctamente' });
@@ -1680,16 +1606,9 @@ app.patch('/api/admin/users/:id/unlock', authMiddleware, adminOnly, async (req, 
     const db = await getDB();
 
     const [exists] = await db.execute('SELECT id, usuario FROM users WHERE id = ?', [req.params.id]);
-    
-    if (exists.length === 0) {
-      return res.status(404).json({ error: 'Usuario no encontrado' });
-    }
+    if (exists.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
-    await db.execute(`
-      UPDATE users 
-      SET failedAttempts = 0, lockedUntil = NULL, updatedAt = NOW()
-      WHERE id = ?
-    `, [req.params.id]);
+    await db.execute(`UPDATE users SET failedAttempts = 0, lockedUntil = NULL, updatedAt = NOW() WHERE id = ?`, [req.params.id]);
 
     console.log(`🔓 Usuario desbloqueado: ${exists[0].usuario} por admin ${req.user.usuario}`);
     res.json({ message: 'Usuario desbloqueado correctamente' });
@@ -1704,10 +1623,7 @@ app.post('/api/admin/users/:id/reset-password', authMiddleware, adminOnly, async
     const db = await getDB();
 
     const [user] = await db.execute('SELECT id, usuario, correo, nombre FROM users WHERE id = ?', [req.params.id]);
-    
-    if (user.length === 0) {
-      return res.status(404).json({ error: 'Usuario no encontrado' });
-    }
+    if (user.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
     const tempPassword = generarPasswordAleatoria(12);
     const hash = await bcrypt.hash(tempPassword, 12);
@@ -1725,19 +1641,11 @@ app.post('/api/admin/users/:id/reset-password', authMiddleware, adminOnly, async
       from: process.env.EMAIL_FROM,
       to: user[0].correo,
       subject: 'Contraseña restablecida - SportLike',
-      html: `
-        <p>Hola ${user[0].nombre},</p>
-        <p>Tu contraseña ha sido restablecida por un administrador.</p>
-        <p><strong>Tu nueva contraseña temporal es:</strong> ${tempPassword}</p>
-        <p>Por seguridad, te recomendamos cambiarla al iniciar sesión.</p>
-      `
+      html: `<p>Hola ${user[0].nombre},</p><p>Tu contraseña ha sido restablecida por un administrador.</p><p><strong>Tu nueva contraseña temporal es:</strong> ${tempPassword}</p><p>Por seguridad, te recomendamos cambiarla al iniciar sesión.</p>`
     });
 
     console.log(`🔑 Contraseña reseteada para usuario: ${user[0].usuario} por admin ${req.user.usuario}`);
-    res.json({ 
-      message: 'Contraseña restablecida. Se ha enviado la nueva contraseña al correo del usuario.',
-      tempPassword: tempPassword
-    });
+    res.json({ message: 'Contraseña restablecida. Se ha enviado la nueva contraseña al correo del usuario.', tempPassword });
   } catch (err) {
     console.error('Error reseteando contraseña:', err);
     res.status(500).json({ error: 'Error reseteando contraseña' });
@@ -1760,25 +1668,18 @@ app.get('/api/admin/users/stats/summary', authMiddleware, adminOnly, async (req,
     `);
 
     const [registrosPorMes] = await db.execute(`
-      SELECT 
-        DATE_FORMAT(createdAt, '%Y-%m') AS mes,
-        COUNT(*) AS registros
+      SELECT DATE_FORMAT(createdAt, '%Y-%m') AS mes, COUNT(*) AS registros
       FROM users
       WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-      GROUP BY mes
-      ORDER BY mes
+      GROUP BY mes ORDER BY mes
     `);
 
-    res.json({
-      resumen: stats[0],
-      registrosPorMes: registrosPorMes
-    });
+    res.json({ resumen: stats[0], registrosPorMes });
   } catch (err) {
     console.error('Error obteniendo estadísticas de usuarios:', err);
     res.status(500).json({ error: 'Error obteniendo estadísticas' });
   }
 });
-
 
 // ================================
 // 📋 ÓRDENES
@@ -1791,9 +1692,8 @@ app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
 
     let sql = `
-      SELECT 
-        o.id, o.user_id, o.total, o.fecha, o.status, o.sucursal,
-        u.nombre, u.apellidoP, u.usuario, u.correo
+      SELECT o.id, o.user_id, o.total, o.fecha, o.status, o.sucursal,
+             u.nombre, u.apellidoP, u.usuario, u.correo
       FROM orders o
       LEFT JOIN users u ON u.id = o.user_id
       WHERE 1=1
@@ -1801,37 +1701,16 @@ app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
 
     const params = [];
 
-    if (status && status !== 'all') {
-      sql += " AND o.status = ?";
-      params.push(status);
-    }
-
-    if (sucursal && sucursal !== 'all') {
-      sql += " AND o.sucursal = ?";
-      params.push(sucursal);
-    }
-
-    if (from) {
-      sql += " AND o.fecha >= ?";
-      params.push(from);
-    }
-
-    if (to) {
-      sql += " AND o.fecha <= ?";
-      params.push(to);
-    }
-
-    if (user_id) {
-      sql += " AND o.user_id = ?";
-      params.push(user_id);
-    }
+    if (status && status !== 'all') { sql += " AND o.status = ?"; params.push(status); }
+    if (sucursal && sucursal !== 'all') { sql += " AND o.sucursal = ?"; params.push(sucursal); }
+    if (from) { sql += " AND o.fecha >= ?"; params.push(from); }
+    if (to) { sql += " AND o.fecha <= ?"; params.push(to); }
+    if (user_id) { sql += " AND o.user_id = ?"; params.push(user_id); }
 
     sql += " ORDER BY o.fecha DESC";
 
     const limitNum = parseInt(limit);
-    if (limitNum > 0) {
-      sql += ` LIMIT ${limitNum}`;
-    }
+    if (limitNum > 0) sql += ` LIMIT ${limitNum}`;
 
     const [rows] = await db.execute(sql, params);
     res.json(rows);
@@ -1846,25 +1725,18 @@ app.get('/api/admin/orders/:id', authMiddleware, adminOnly, async (req, res) => 
     const db = await getDB();
 
     const [order] = await db.execute(`
-      SELECT 
-        o.id, o.user_id, o.total, o.fecha, o.status, o.sucursal,
-        u.nombre, u.apellidoP, u.apellidoM, u.usuario, u.correo, u.telefono
-      FROM orders o
-      LEFT JOIN users u ON u.id = o.user_id
-      WHERE o.id = ?
+      SELECT o.id, o.user_id, o.total, o.fecha, o.status, o.sucursal,
+             u.nombre, u.apellidoP, u.apellidoM, u.usuario, u.correo, u.telefono
+      FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?
     `, [req.params.id]);
 
-    if (order.length === 0) {
-      return res.status(404).json({ error: 'Orden no encontrada' });
-    }
+    if (order.length === 0) return res.status(404).json({ error: 'Orden no encontrada' });
 
     let items = [];
     try {
       const [itemRows] = await db.execute(`
         SELECT oi.*, p.nombre, p.imagen, p.categoria, p.marca
-        FROM order_items oi
-        JOIN products p ON p.id = oi.product_id
-        WHERE oi.order_id = ?
+        FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ?
       `, [req.params.id]);
       items = itemRows;
     } catch (e) {
@@ -1880,7 +1752,6 @@ app.get('/api/admin/orders/:id', authMiddleware, adminOnly, async (req, res) => 
 
 app.patch('/api/admin/orders/:id/status', authMiddleware, adminOnly, async (req, res) => {
   const { status } = req.body;
-
   const statusValidos = ['pendiente', 'procesando', 'enviado', 'entregado', 'cancelado'];
 
   if (!status || !statusValidos.includes(status)) {
@@ -1889,17 +1760,10 @@ app.patch('/api/admin/orders/:id/status', authMiddleware, adminOnly, async (req,
 
   try {
     const db = await getDB();
-
     const [exists] = await db.execute('SELECT id FROM orders WHERE id = ?', [req.params.id]);
+    if (exists.length === 0) return res.status(404).json({ error: 'Orden no encontrada' });
 
-    if (exists.length === 0) {
-      return res.status(404).json({ error: 'Orden no encontrada' });
-    }
-
-    await db.execute(
-      'UPDATE orders SET status = ? WHERE id = ?',
-      [status, req.params.id]
-    );
+    await db.execute('UPDATE orders SET status = ? WHERE id = ?', [status, req.params.id]);
 
     console.log(`✅ Status de orden actualizado: Orden #${req.params.id} → '${status}' por admin ${req.user.usuario}`);
     res.json({ message: 'Status actualizado correctamente' });
@@ -1915,45 +1779,30 @@ app.get('/api/admin/orders/stats/summary', authMiddleware, adminOnly, async (req
 
     const [stats] = await db.execute(`
       SELECT 
-        COUNT(*)                                                          AS total_ordenes,
-        COALESCE(SUM(total), 0)                                           AS ingresos_totales,
-        COALESCE(AVG(total), 0)                                           AS ticket_promedio,
-        SUM(CASE WHEN status = 'pendiente'  THEN 1 ELSE 0 END)           AS pendientes,
-        SUM(CASE WHEN status = 'procesando' THEN 1 ELSE 0 END)           AS procesando,
-        SUM(CASE WHEN status = 'enviado'    THEN 1 ELSE 0 END)           AS enviado,
-        SUM(CASE WHEN status = 'entregado'  THEN 1 ELSE 0 END)           AS entregadas,
-        SUM(CASE WHEN status = 'cancelado'  THEN 1 ELSE 0 END)           AS canceladas
+        COUNT(*) AS total_ordenes,
+        COALESCE(SUM(total), 0) AS ingresos_totales,
+        COALESCE(AVG(total), 0) AS ticket_promedio,
+        SUM(CASE WHEN status = 'pendiente'  THEN 1 ELSE 0 END) AS pendientes,
+        SUM(CASE WHEN status = 'procesando' THEN 1 ELSE 0 END) AS procesando,
+        SUM(CASE WHEN status = 'enviado'    THEN 1 ELSE 0 END) AS enviado,
+        SUM(CASE WHEN status = 'entregado'  THEN 1 ELSE 0 END) AS entregadas,
+        SUM(CASE WHEN status = 'cancelado'  THEN 1 ELSE 0 END) AS canceladas
       FROM orders
     `);
 
     const [porSucursal] = await db.execute(`
-      SELECT 
-        o.sucursal,
-        b.nombre                  AS nombre_sucursal,
-        COUNT(*)                  AS ordenes,
-        COALESCE(SUM(o.total), 0) AS ingresos
-      FROM orders o
-      LEFT JOIN branches b ON b.id = o.sucursal
-      GROUP BY o.sucursal, b.nombre
-      ORDER BY ingresos DESC
+      SELECT o.sucursal, b.nombre AS nombre_sucursal, COUNT(*) AS ordenes, COALESCE(SUM(o.total), 0) AS ingresos
+      FROM orders o LEFT JOIN branches b ON b.id = o.sucursal
+      GROUP BY o.sucursal, b.nombre ORDER BY ingresos DESC
     `);
 
     const [ventasPorDia] = await db.execute(`
-      SELECT 
-        DATE(fecha)               AS dia,
-        COUNT(*)                  AS ordenes,
-        COALESCE(SUM(total), 0)   AS ingresos
-      FROM orders
-      WHERE fecha >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      GROUP BY dia
-      ORDER BY dia
+      SELECT DATE(fecha) AS dia, COUNT(*) AS ordenes, COALESCE(SUM(total), 0) AS ingresos
+      FROM orders WHERE fecha >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY dia ORDER BY dia
     `);
 
-    res.json({
-      resumen:      stats[0],
-      porSucursal:  porSucursal,
-      ventasPorDia: ventasPorDia
-    });
+    res.json({ resumen: stats[0], porSucursal, ventasPorDia });
   } catch (err) {
     console.error('Error obteniendo estadísticas de órdenes:', err.message);
     res.status(500).json({ error: 'Error obteniendo estadísticas', detalle: err.message });
@@ -1972,70 +1821,36 @@ app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
     let where = [];
     let params = [];
 
-    if (from) {
-      where.push("o.fecha >= ?");
-      params.push(from);
-    }
-
-    if (to) {
-      where.push("o.fecha <= ?");
-      params.push(to);
-    }
-
-    if (branch && branch !== "all") {
-      where.push("o.sucursal = ?");
-      params.push(branch);
-    }
+    if (from) { where.push("o.fecha >= ?"); params.push(from); }
+    if (to)   { where.push("o.fecha <= ?"); params.push(to); }
+    if (branch && branch !== "all") { where.push("o.sucursal = ?"); params.push(branch); }
 
     const whereSQL = where.length ? "WHERE " + where.join(" AND ") : "";
 
     const [timeline] = await db.execute(`
-      SELECT 
-        DATE(o.fecha)             AS dia,
-        COALESCE(SUM(o.total), 0) AS total
-      FROM orders o
-      ${whereSQL}
-      GROUP BY dia
-      ORDER BY dia
+      SELECT DATE(o.fecha) AS dia, COALESCE(SUM(o.total), 0) AS total
+      FROM orders o ${whereSQL} GROUP BY dia ORDER BY dia
     `, params);
 
     const [branches] = await db.execute(`
-      SELECT 
-        COALESCE(b.nombre, CONCAT('Sucursal ', o.sucursal)) AS sucursal,
-        COALESCE(SUM(o.total), 0)                           AS ingresos
-      FROM orders o
-      LEFT JOIN branches b ON b.id = o.sucursal
-      ${whereSQL}
-      GROUP BY o.sucursal, b.nombre
-      ORDER BY ingresos DESC
+      SELECT COALESCE(b.nombre, CONCAT('Sucursal ', o.sucursal)) AS sucursal, COALESCE(SUM(o.total), 0) AS ingresos
+      FROM orders o LEFT JOIN branches b ON b.id = o.sucursal
+      ${whereSQL} GROUP BY o.sucursal, b.nombre ORDER BY ingresos DESC
     `, params);
 
     let topProducts = [];
     try {
       const [tp] = await db.execute(`
-        SELECT 
-          p.nombre,
-          p.marca,
-          SUM(oi.cantidad)  AS vendidos,
-          SUM(oi.subtotal)  AS ingresos
-        FROM order_items oi
-        JOIN products p ON p.id = oi.product_id
-        JOIN orders o ON o.id = oi.order_id
-        ${whereSQL}
-        GROUP BY p.nombre, p.marca
-        ORDER BY vendidos DESC
-        LIMIT 10
+        SELECT p.nombre, p.marca, SUM(oi.cantidad) AS vendidos, SUM(oi.subtotal) AS ingresos
+        FROM order_items oi JOIN products p ON p.id = oi.product_id JOIN orders o ON o.id = oi.order_id
+        ${whereSQL} GROUP BY p.nombre, p.marca ORDER BY vendidos DESC LIMIT 10
       `, params);
       topProducts = tp;
     } catch (e) {
       console.warn('order_items no disponible:', e.message);
     }
 
-    res.json({
-      salesTimeline: timeline,
-      branchRanking: branches,
-      topProducts
-    });
+    res.json({ salesTimeline: timeline, branchRanking: branches, topProducts });
   } catch (err) {
     console.error("Error en dashboard admin:", err.message);
     res.status(500).json({ error: "Error generando dashboard admin", detalle: err.message });
