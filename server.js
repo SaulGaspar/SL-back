@@ -342,18 +342,15 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   const { usuario, password } = req.body;
   
-  // Validación básica
   if (!usuario || !password) {
     return res.status(400).json({ error: 'Usuario y contraseña requeridos' });
   }
   
-  // Sanitizar input
   const usuarioSafe = sanitizeInput(usuario);
 
   try {
     const db = await getDB();
     
-    // 🔒 IMPORTANTE: Seleccionar solo campos necesarios, incluyendo el rol
     const [rows] = await db.execute(
       'SELECT id, nombre, apellidoP, apellidoM, usuario, correo, password, rol, verificado, failedAttempts, lockedUntil FROM users WHERE usuario = ?', 
       [usuarioSafe]
@@ -365,18 +362,15 @@ app.post('/api/login', async (req, res) => {
 
     const user = rows[0];
 
-    // Verificar bloqueo
     if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
       const minutos = Math.ceil((new Date(user.lockedUntil) - new Date()) / 60000);
       return res.status(403).json({ error: `Cuenta bloqueada. Intenta en ${minutos} minutos.` });
     }
 
-    // Verificar email
     if (user.verificado === 0) {
       return res.status(403).json({ error: 'Debes verificar tu correo antes de iniciar sesión' });
     }
 
-    // Verificar contraseña
     const match = await bcrypt.compare(password, user.password);
 
     if (!match) {
@@ -400,18 +394,16 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: `Credenciales incorrectas. Intentos restantes: ${3 - intentos}` });
     }
 
-    // Login exitoso: resetear intentos
     await db.execute(
       'UPDATE users SET failedAttempts=0, lockedUntil=NULL WHERE id=?',
       [user.id]
     );
 
-    // 🔒 CREAR TOKEN CON INFORMACIÓN VALIDADA
     const jwtToken = jwt.sign(
       { 
         id: user.id, 
         usuario: user.usuario, 
-        rol: user.rol, // El rol viene directamente de la BD
+        rol: user.rol,
         correo: user.correo,
         nombre: user.nombre
       },
@@ -419,7 +411,6 @@ app.post('/api/login', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    // Log de login exitoso
     console.log(`✅ Login exitoso: ${user.usuario} (${user.rol})`);
 
     res.json({
@@ -477,14 +468,13 @@ app.post('/api/forgot-password', async (req, res) => {
     const [users] = await db.execute('SELECT id, nombre FROM users WHERE correo = ?', [correoSafe]);
     
     if (users.length === 0) {
-      // No revelar si el usuario existe o no
       return res.json({ message: 'Si el correo existe, recibirás un enlace de recuperación' });
     }
     
     const userId = users[0].id;
     const nombre = users[0].nombre;
     const token = crypto.randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + 3600000); // 1 hora
+    const expires = new Date(Date.now() + 3600000);
     
     await db.execute(
       'INSERT INTO Token (userId, token, expires, createdAt) VALUES (?, ?, ?, NOW())', 
@@ -565,7 +555,6 @@ app.post('/api/update-profile', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Usuario inválido' });
   }
   
-  // Sanitizar
   const nombreSafe = sanitizeInput(nombre);
   const apellidoPSafe = sanitizeInput(apellidoP);
   const apellidoMSafe = apellidoM ? sanitizeInput(apellidoM) : null;
@@ -666,85 +655,11 @@ app.get("/api/me", authMiddleware, async (req, res) => {
 });
 
 // ================================
-// 📊 ADMIN - DASHBOARD
-// ================================
-
-app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
-  try {
-    const db = await getDB();
-    const { from, to, branch } = req.query;
-
-    let where = [];
-    let params = [];
-
-    if (from) {
-      where.push("o.fecha >= ?");
-      params.push(from);
-    }
-
-    if (to) {
-      where.push("o.fecha <= ?");
-      params.push(to);
-    }
-
-    if (branch && branch !== "all") {
-      where.push("o.sucursal = ?");
-      params.push(branch);
-    }
-
-    const whereSQL = where.length ? "WHERE " + where.join(" AND ") : "";
-
-    const [timeline] = await db.execute(`
-      SELECT 
-        DATE(o.fecha) AS dia,
-        SUM(o.total) AS total
-      FROM orders o
-      ${whereSQL}
-      GROUP BY dia
-      ORDER BY dia;
-    `, params);
-
-    const [branches] = await db.execute(`
-      SELECT 
-        o.sucursal,
-        SUM(o.total) AS ingresos
-      FROM orders o
-      ${whereSQL}
-      GROUP BY o.sucursal
-      ORDER BY ingresos DESC;
-    `, params);
-
-    const [topProducts] = await db.execute(`
-      SELECT 
-        p.nombre,
-        SUM(oi.cantidad) AS vendidos,
-        SUM(oi.subtotal) AS ingresos
-      FROM order_items oi
-      JOIN products p ON p.id = oi.product_id
-      JOIN orders o ON o.id = oi.order_id
-      ${whereSQL}
-      GROUP BY p.nombre
-      ORDER BY vendidos DESC
-      LIMIT 10;
-    `, params);
-
-    res.json({
-      salesTimeline: timeline,
-      branchRanking: branches,
-      topProducts
-    });
-  } catch (err) {
-    console.error("Error en dashboard admin:", err);
-    res.status(500).json({ error: "Error generando dashboard admin" });
-  }
-});
-
-// ================================
 // 🛍️ PÚBLICO - PRODUCTOS PARA CATÁLOGO
 // ================================
 
 app.get("/api/products", async (req, res) => {
-  const { q, categoria } = req.query;
+  const { q, categoria, marca } = req.query; // ← añadido marca
 
   try {
     const db = await getDB();
@@ -753,6 +668,7 @@ app.get("/api/products", async (req, res) => {
       SELECT 
         p.id,
         p.nombre,
+        p.marca,
         p.descripcion,
         p.precio,
         p.categoria,
@@ -773,6 +689,11 @@ app.get("/api/products", async (req, res) => {
     if (categoria) {
       sql += " AND p.categoria = ?";
       params.push(categoria);
+    }
+
+    if (marca) { // ← nuevo filtro por marca
+      sql += " AND p.marca = ?";
+      params.push(marca);
     }
 
     sql += " GROUP BY p.id ORDER BY p.nombre";
@@ -801,6 +722,22 @@ app.get("/api/categories", async (req, res) => {
   }
 });
 
+// Marcas públicas ← nuevo endpoint
+app.get("/api/marcas", async (req, res) => {
+  try {
+    const db = await getDB();
+    const [rows] = await db.execute(`
+      SELECT DISTINCT marca AS nombre
+      FROM products
+      WHERE activo = 1 AND marca IS NOT NULL AND marca != ''
+      ORDER BY marca
+    `);
+    res.json(rows.map(r => r.nombre));
+  } catch (err) {
+    res.status(500).json({ error: "Error obteniendo marcas" });
+  }
+});
+
 
 // ================================
 // ADMIN - PRODUCTOS
@@ -813,7 +750,8 @@ app.get("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
     const [rows] = await db.execute(`
       SELECT 
         p.id, 
-        p.nombre, 
+        p.nombre,
+        p.marca,
         p.descripcion, 
         p.precio, 
         p.categoria, 
@@ -853,7 +791,6 @@ app.get("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) =
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
-    // Obtener inventario por sucursal
     const [inventory] = await db.execute(`
       SELECT 
         i.id,
@@ -878,9 +815,8 @@ app.get("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) =
 
 // ➕ CREAR PRODUCTO (CON INVENTARIO INICIAL)
 app.post("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
-  const { nombre, descripcion, precio, categoria, imagen, inventario } = req.body;
+  const { nombre, marca, descripcion, precio, categoria, imagen, inventario } = req.body; // ← añadido marca
 
-  // Validaciones
   if (!nombre || !precio) {
     return res.status(400).json({ error: "Nombre y precio obligatorios" });
   }
@@ -889,24 +825,22 @@ app.post("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
     return res.status(400).json({ error: "El precio no puede ser negativo" });
   }
 
-  // Sanitizar inputs
   const nombreSafe = sanitizeInput(nombre);
+  const marcaSafe = marca ? sanitizeInput(marca) : null; // ← nuevo
   const descripcionSafe = descripcion ? sanitizeInput(descripcion) : null;
   const categoriaSafe = categoria ? sanitizeInput(categoria) : null;
 
   try {
     const db = await getDB();
     
-    // Insertar producto
     const [result] = await db.execute(`
       INSERT INTO products
-      (nombre, descripcion, precio, categoria, imagen, activo, createdAt, updatedAt)
-      VALUES (?,?,?,?,?,1,NOW(),NOW())
-    `, [nombreSafe, descripcionSafe, precio, categoriaSafe, imagen]);
+      (nombre, marca, descripcion, precio, categoria, imagen, activo, createdAt, updatedAt)
+      VALUES (?,?,?,?,?,?,1,NOW(),NOW())
+    `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen]); // ← añadido marcaSafe
 
     const productId = result.insertId;
 
-    // Si se proporcionó inventario inicial, agregarlo
     if (inventario && Array.isArray(inventario) && inventario.length > 0) {
       for (const inv of inventario) {
         if (inv.branch_id && inv.stock !== undefined) {
@@ -932,9 +866,8 @@ app.post("/api/admin/products", authMiddleware, adminOnly, async (req, res) => {
 
 // ✏️ ACTUALIZAR PRODUCTO
 app.put("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) => {
-  const { nombre, descripcion, precio, categoria, imagen, activo } = req.body;
+  const { nombre, marca, descripcion, precio, categoria, imagen, activo } = req.body; // ← añadido marca
 
-  // Validaciones
   if (!nombre || precio === undefined) {
     return res.status(400).json({ error: "Nombre y precio son obligatorios" });
   }
@@ -943,15 +876,14 @@ app.put("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) =
     return res.status(400).json({ error: "El precio no puede ser negativo" });
   }
 
-  // Sanitizar
   const nombreSafe = sanitizeInput(nombre);
+  const marcaSafe = marca ? sanitizeInput(marca) : null; // ← nuevo
   const descripcionSafe = descripcion ? sanitizeInput(descripcion) : null;
   const categoriaSafe = categoria ? sanitizeInput(categoria) : null;
 
   try {
     const db = await getDB();
     
-    // Verificar que el producto existe
     const [exists] = await db.execute('SELECT id FROM products WHERE id = ?', [req.params.id]);
     
     if (exists.length === 0) {
@@ -960,9 +892,9 @@ app.put("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res) =
 
     await db.execute(`
       UPDATE products
-      SET nombre=?, descripcion=?, precio=?, categoria=?, imagen=?, activo=?, updatedAt=NOW()
+      SET nombre=?, marca=?, descripcion=?, precio=?, categoria=?, imagen=?, activo=?, updatedAt=NOW()
       WHERE id=?
-    `, [nombreSafe, descripcionSafe, precio, categoriaSafe, imagen, activo, req.params.id]);
+    `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, activo, req.params.id]); // ← añadido marcaSafe
 
     console.log(`✅ Producto actualizado: ID ${req.params.id} por usuario ${req.user.usuario}`);
     res.json({ message: "Producto actualizado correctamente" });
@@ -977,14 +909,12 @@ app.delete("/api/admin/products/:id", authMiddleware, adminOnly, async (req, res
   try {
     const db = await getDB();
     
-    // Verificar que el producto existe
     const [exists] = await db.execute('SELECT id, nombre FROM products WHERE id = ?', [req.params.id]);
     
     if (exists.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
-    // Desactivar producto (soft delete)
     await db.execute(`
       UPDATE products
       SET activo = 0, updatedAt = NOW()
@@ -1035,10 +965,7 @@ app.delete("/api/admin/products/:id/permanent", authMiddleware, adminOnly, async
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
-    // Primero eliminar inventario relacionado
     await db.execute('DELETE FROM inventory WHERE product_id = ?', [req.params.id]);
-    
-    // Luego eliminar el producto
     await db.execute('DELETE FROM products WHERE id = ?', [req.params.id]);
 
     console.log(`🗑️ Producto eliminado permanentemente: ${exists[0].nombre} (ID: ${req.params.id}) por usuario ${req.user.usuario}`);
@@ -1049,7 +976,7 @@ app.delete("/api/admin/products/:id/permanent", authMiddleware, adminOnly, async
   }
 });
 
-// 📊 OBTENER CATEGORÍAS DISPONIBLES
+// 📊 OBTENER CATEGORÍAS DISPONIBLES (ADMIN)
 app.get("/api/admin/categories", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1067,9 +994,27 @@ app.get("/api/admin/categories", authMiddleware, adminOnly, async (req, res) => 
   }
 });
 
+// 📊 OBTENER MARCAS DISPONIBLES (ADMIN) ← nuevo endpoint
+app.get("/api/admin/marcas", authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+    const [rows] = await db.execute(`
+      SELECT DISTINCT marca AS nombre, COUNT(*) AS productos
+      FROM products
+      WHERE marca IS NOT NULL AND marca != ''
+      GROUP BY marca
+      ORDER BY marca
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error obteniendo marcas:', err);
+    res.status(500).json({ error: "Error obteniendo marcas" });
+  }
+});
+
 // 🔍 BUSCAR PRODUCTOS (ADMIN)
 app.get("/api/admin/products/search", authMiddleware, adminOnly, async (req, res) => {
-  const { q, categoria, activo } = req.query;
+  const { q, categoria, marca, activo } = req.query; // ← añadido marca
 
   try {
     const db = await getDB();
@@ -1077,7 +1022,8 @@ app.get("/api/admin/products/search", authMiddleware, adminOnly, async (req, res
     let sql = `
       SELECT 
         p.id, 
-        p.nombre, 
+        p.nombre,
+        p.marca,
         p.descripcion, 
         p.precio, 
         p.categoria, 
@@ -1099,6 +1045,11 @@ app.get("/api/admin/products/search", authMiddleware, adminOnly, async (req, res
     if (categoria) {
       sql += " AND p.categoria = ?";
       params.push(categoria);
+    }
+
+    if (marca) { // ← nuevo filtro
+      sql += " AND p.marca = ?";
+      params.push(marca);
     }
 
     if (activo !== undefined) {
@@ -1127,14 +1078,12 @@ app.put("/api/admin/products/:id/inventory", authMiddleware, adminOnly, async (r
   try {
     const db = await getDB();
 
-    // Verificar que el producto existe
     const [exists] = await db.execute('SELECT id FROM products WHERE id = ?', [req.params.id]);
     
     if (exists.length === 0) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
-    // Actualizar inventario para cada sucursal
     for (const inv of inventario) {
       if (inv.branch_id && inv.stock !== undefined) {
         await db.execute(`
@@ -1158,7 +1107,6 @@ app.put("/api/admin/products/:id/inventory", authMiddleware, adminOnly, async (r
 // 📦 ADMIN - INVENTARIO (MEJORADO)
 // ================================
 
-// 📋 OBTENER TODO EL INVENTARIO
 app.get("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => {
   const { branch, low_stock } = req.query;
 
@@ -1172,6 +1120,7 @@ app.get("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => {
         i.branch_id,
         b.nombre AS sucursal,
         p.nombre AS producto,
+        p.marca,
         p.precio,
         p.categoria,
         p.imagen,
@@ -1210,7 +1159,6 @@ app.get("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// 📊 OBTENER ESTADÍSTICAS DE INVENTARIO
 app.get("/api/admin/inventory/stats", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1250,7 +1198,6 @@ app.get("/api/admin/inventory/stats", authMiddleware, adminOnly, async (req, res
   }
 });
 
-// ✏️ ACTUALIZAR INVENTARIO INDIVIDUAL
 app.put("/api/admin/inventory/:id", authMiddleware, adminOnly, async (req, res) => {
   const { stock, min_stock } = req.body;
 
@@ -1265,7 +1212,6 @@ app.put("/api/admin/inventory/:id", authMiddleware, adminOnly, async (req, res) 
   try {
     const db = await getDB();
     
-    // Verificar que el registro existe
     const [exists] = await db.execute(`
       SELECT i.id, p.nombre AS producto, b.nombre AS sucursal
       FROM inventory i
@@ -1292,7 +1238,6 @@ app.put("/api/admin/inventory/:id", authMiddleware, adminOnly, async (req, res) 
   }
 });
 
-// ➕ AGREGAR PRODUCTO A SUCURSAL
 app.post("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => {
   const { product_id, branch_id, stock, min_stock } = req.body;
 
@@ -1307,7 +1252,6 @@ app.post("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => 
   try {
     const db = await getDB();
 
-    // Verificar que el producto existe y está activo
     const [product] = await db.execute('SELECT id, nombre, activo FROM products WHERE id = ?', [product_id]);
     
     if (product.length === 0) {
@@ -1318,14 +1262,12 @@ app.post("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => 
       return res.status(400).json({ error: "No se puede agregar inventario a un producto inactivo" });
     }
 
-    // Verificar que la sucursal existe
     const [branch] = await db.execute('SELECT id, nombre FROM branches WHERE id = ?', [branch_id]);
     
     if (branch.length === 0) {
       return res.status(404).json({ error: "Sucursal no encontrada" });
     }
 
-    // Verificar si ya existe inventario para este producto en esta sucursal
     const [exists] = await db.execute(`
       SELECT id FROM inventory WHERE product_id = ? AND branch_id = ?
     `, [product_id, branch_id]);
@@ -1334,7 +1276,6 @@ app.post("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => 
       return res.status(400).json({ error: "Este producto ya tiene inventario en esta sucursal. Use actualizar en su lugar." });
     }
 
-    // Insertar inventario
     await db.execute(`
       INSERT INTO inventory (product_id, branch_id, stock, min_stock)
       VALUES (?, ?, ?, ?)
@@ -1348,7 +1289,6 @@ app.post("/api/admin/inventory", authMiddleware, adminOnly, async (req, res) => 
   }
 });
 
-// 🗑️ ELIMINAR INVENTARIO DE UNA SUCURSAL
 app.delete("/api/admin/inventory/:id", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1375,7 +1315,6 @@ app.delete("/api/admin/inventory/:id", authMiddleware, adminOnly, async (req, re
   }
 });
 
-// 🔄 TRANSFERIR STOCK ENTRE SUCURSALES
 app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req, res) => {
   const { product_id, from_branch_id, to_branch_id, cantidad } = req.body;
 
@@ -1394,11 +1333,9 @@ app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req,
   try {
     const db = await getDB();
 
-    // Iniciar transacción
     await db.execute('START TRANSACTION');
 
     try {
-      // Verificar inventario origen
       const [origen] = await db.execute(`
         SELECT i.id, i.stock, b.nombre AS sucursal, p.nombre AS producto
         FROM inventory i
@@ -1415,7 +1352,6 @@ app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req,
         throw new Error(`Stock insuficiente en ${origen[0].sucursal}. Disponible: ${origen[0].stock}`);
       }
 
-      // Verificar inventario destino
       const [destino] = await db.execute(`
         SELECT i.id, b.nombre AS sucursal
         FROM inventory i
@@ -1423,12 +1359,10 @@ app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req,
         WHERE i.product_id = ? AND i.branch_id = ?
       `, [product_id, to_branch_id]);
 
-      // Restar del origen
       await db.execute(`
         UPDATE inventory SET stock = stock - ? WHERE id = ?
       `, [cantidad, origen[0].id]);
 
-      // Agregar al destino
       if (destino.length > 0) {
         await db.execute(`
           UPDATE inventory SET stock = stock + ? WHERE id = ?
@@ -1440,7 +1374,6 @@ app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req,
         `, [product_id, to_branch_id, cantidad]);
       }
 
-      // Confirmar transacción
       await db.execute('COMMIT');
 
       console.log(`✅ Transferencia completada: ${cantidad} unidades de ${origen[0].producto} de ${origen[0].sucursal} a ${destino[0]?.sucursal || 'nueva sucursal'} por usuario ${req.user.usuario}`);
@@ -1461,7 +1394,6 @@ app.post("/api/admin/inventory/transfer", authMiddleware, adminOnly, async (req,
 // 🏪 ADMIN - SUCURSALES
 // ================================
 
-// 📋 OBTENER TODAS LAS SUCURSALES
 app.get("/api/admin/branches", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1487,7 +1419,6 @@ app.get("/api/admin/branches", authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ➕ CREAR SUCURSAL
 app.post("/api/admin/branches", authMiddleware, adminOnly, async (req, res) => {
   const { nombre, direccion, telefono } = req.body;
 
@@ -1521,7 +1452,6 @@ app.post("/api/admin/branches", authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ✏️ ACTUALIZAR SUCURSAL
 app.put("/api/admin/branches/:id", authMiddleware, adminOnly, async (req, res) => {
   const { nombre, direccion, telefono, activo } = req.body;
 
@@ -1556,7 +1486,6 @@ app.put("/api/admin/branches/:id", authMiddleware, adminOnly, async (req, res) =
   }
 });
 
-// 🗑️ ELIMINAR SUCURSAL (SOFT DELETE)
 app.delete("/api/admin/branches/:id", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1567,7 +1496,6 @@ app.delete("/api/admin/branches/:id", authMiddleware, adminOnly, async (req, res
       return res.status(404).json({ error: "Sucursal no encontrada" });
     }
 
-    // Verificar si tiene inventario
     const [inventory] = await db.execute('SELECT COUNT(*) as total FROM inventory WHERE branch_id = ?', [req.params.id]);
     
     if (inventory[0].total > 0) {
@@ -1591,7 +1519,6 @@ app.delete("/api/admin/branches/:id", authMiddleware, adminOnly, async (req, res
 // 👥 ADMIN - USUARIOS (MEJORADO)
 // ================================
 
-// 📋 OBTENER TODOS LOS USUARIOS (CON FILTROS)
 app.get('/api/admin/users', authMiddleware, adminOnly, async (req, res) => {
   const { rol, verificado, search } = req.query;
 
@@ -1600,19 +1527,8 @@ app.get('/api/admin/users', authMiddleware, adminOnly, async (req, res) => {
     
     let sql = `
       SELECT 
-        id, 
-        nombre, 
-        apellidoP, 
-        apellidoM, 
-        correo, 
-        telefono,
-        usuario, 
-        rol,
-        verificado,
-        failedAttempts,
-        lockedUntil,
-        createdAt,
-        updatedAt
+        id, nombre, apellidoP, apellidoM, correo, telefono,
+        usuario, rol, verificado, failedAttempts, lockedUntil, createdAt, updatedAt
       FROM users
       WHERE 1=1
     `;
@@ -1645,7 +1561,6 @@ app.get('/api/admin/users', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// 👤 OBTENER UN USUARIO ESPECÍFICO
 app.get('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1661,7 +1576,6 @@ app.get('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
-    // Obtener órdenes del usuario
     const [orders] = await db.execute(`
       SELECT id, total, fecha, estado, sucursal
       FROM orders
@@ -1680,7 +1594,6 @@ app.get('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ✏️ ACTUALIZAR USUARIO (ADMIN)
 app.put('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   const { nombre, apellidoP, apellidoM, telefono, usuario, rol, verificado } = req.body;
 
@@ -1692,7 +1605,6 @@ app.put('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
     return res.status(400).json({ error: 'Usuario inválido' });
   }
 
-  // Validar rol
   if (rol && !['admin', 'cliente'].includes(rol)) {
     return res.status(400).json({ error: 'Rol inválido' });
   }
@@ -1706,14 +1618,12 @@ app.put('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // Verificar que el usuario existe
     const [exists] = await db.execute('SELECT id FROM users WHERE id = ?', [req.params.id]);
     
     if (exists.length === 0) {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
-    // Verificar duplicados
     const [duplicates] = await db.execute(`
       SELECT id FROM users 
       WHERE (usuario = ? OR telefono = ?) AND id != ?
@@ -1737,12 +1647,10 @@ app.put('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// 🗑️ DESACTIVAR USUARIO
 app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // No permitir que un admin se elimine a sí mismo
     if (req.user.id === parseInt(req.params.id)) {
       return res.status(400).json({ error: 'No puedes eliminar tu propia cuenta' });
     }
@@ -1753,7 +1661,6 @@ app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) =
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
-    // Desactivar cuenta
     await db.execute(`
       UPDATE users 
       SET verificado = 0, updatedAt = NOW()
@@ -1768,7 +1675,6 @@ app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) =
   }
 });
 
-// 🔓 DESBLOQUEAR USUARIO
 app.patch('/api/admin/users/:id/unlock', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1793,7 +1699,6 @@ app.patch('/api/admin/users/:id/unlock', authMiddleware, adminOnly, async (req, 
   }
 });
 
-// 🔑 RESETEAR CONTRASEÑA DE USUARIO (ADMIN)
 app.post('/api/admin/users/:id/reset-password', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1804,13 +1709,11 @@ app.post('/api/admin/users/:id/reset-password', authMiddleware, adminOnly, async
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
-    // Generar contraseña temporal
     const tempPassword = generarPasswordAleatoria(12);
     const hash = await bcrypt.hash(tempPassword, 12);
 
     await db.execute('UPDATE users SET password = ?, updatedAt = NOW() WHERE id = ?', [hash, req.params.id]);
 
-    // Enviar correo con la nueva contraseña
     const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
       port: process.env.EMAIL_PORT,
@@ -1841,7 +1744,6 @@ app.post('/api/admin/users/:id/reset-password', authMiddleware, adminOnly, async
   }
 });
 
-// 📊 ESTADÍSTICAS DE USUARIOS
 app.get('/api/admin/users/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -1876,24 +1778,12 @@ app.get('/api/admin/users/stats/summary', authMiddleware, adminOnly, async (req,
     res.status(500).json({ error: 'Error obteniendo estadísticas' });
   }
 });
-// ================================================================
-// CORRECCIONES PARA server.js
-// 
-// Tu tabla orders tiene estas columnas reales:
-//   id, user_id, sucursal (int/FK), total, status, fecha
-//
-// El backend original usaba: estado, metodo_pago, direccion_envio
-// que NO existen en tu tabla → causaban los errores 500.
-//
-// INSTRUCCIONES:
-//   Reemplaza los 4 endpoints de órdenes en tu server.js
-//   con estos corregidos.
-// ================================================================
 
 
-// ================================================================
-// 📋 LISTAR ÓRDENES (con filtros y limit opcional)
-// ================================================================
+// ================================
+// 📋 ÓRDENES
+// ================================
+
 app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
   const { status, sucursal, from, to, user_id, limit } = req.query;
 
@@ -1902,16 +1792,8 @@ app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
 
     let sql = `
       SELECT 
-        o.id,
-        o.user_id,
-        o.total,
-        o.fecha,
-        o.status,
-        o.sucursal,
-        u.nombre,
-        u.apellidoP,
-        u.usuario,
-        u.correo
+        o.id, o.user_id, o.total, o.fecha, o.status, o.sucursal,
+        u.nombre, u.apellidoP, u.usuario, u.correo
       FROM orders o
       LEFT JOIN users u ON u.id = o.user_id
       WHERE 1=1
@@ -1959,28 +1841,14 @@ app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-
-// ================================================================
-// 📄 DETALLE DE UNA ORDEN
-// ================================================================
 app.get('/api/admin/orders/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
     const [order] = await db.execute(`
       SELECT 
-        o.id,
-        o.user_id,
-        o.total,
-        o.fecha,
-        o.status,
-        o.sucursal,
-        u.nombre,
-        u.apellidoP,
-        u.apellidoM,
-        u.usuario,
-        u.correo,
-        u.telefono
+        o.id, o.user_id, o.total, o.fecha, o.status, o.sucursal,
+        u.nombre, u.apellidoP, u.apellidoM, u.usuario, u.correo, u.telefono
       FROM orders o
       LEFT JOIN users u ON u.id = o.user_id
       WHERE o.id = ?
@@ -1990,15 +1858,10 @@ app.get('/api/admin/orders/:id', authMiddleware, adminOnly, async (req, res) => 
       return res.status(404).json({ error: 'Orden no encontrada' });
     }
 
-    // Intentar obtener items si existe la tabla order_items
     let items = [];
     try {
       const [itemRows] = await db.execute(`
-        SELECT 
-          oi.*,
-          p.nombre,
-          p.imagen,
-          p.categoria
+        SELECT oi.*, p.nombre, p.imagen, p.categoria, p.marca
         FROM order_items oi
         JOIN products p ON p.id = oi.product_id
         WHERE oi.order_id = ?
@@ -2015,10 +1878,6 @@ app.get('/api/admin/orders/:id', authMiddleware, adminOnly, async (req, res) => 
   }
 });
 
-
-// ================================================================
-// ✏️ ACTUALIZAR STATUS DE ORDEN
-// ================================================================
 app.patch('/api/admin/orders/:id/status', authMiddleware, adminOnly, async (req, res) => {
   const { status } = req.body;
 
@@ -2050,15 +1909,10 @@ app.patch('/api/admin/orders/:id/status', authMiddleware, adminOnly, async (req,
   }
 });
 
-
-// ================================================================
-// 📊 ESTADÍSTICAS DE ÓRDENES
-// ================================================================
 app.get('/api/admin/orders/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // Usa 'status' (nombre real de tu columna) con COALESCE para tabla vacía
     const [stats] = await db.execute(`
       SELECT 
         COUNT(*)                                                          AS total_ordenes,
@@ -2106,11 +1960,10 @@ app.get('/api/admin/orders/stats/summary', authMiddleware, adminOnly, async (req
   }
 });
 
+// ================================
+// 📊 ADMIN - DASHBOARD
+// ================================
 
-// ================================================================
-// También corrige el endpoint /api/admin/dashboard que usa 'estado'
-// Reemplaza el bloque completo:
-// ================================================================
 app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -2146,7 +1999,6 @@ app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
       ORDER BY dia
     `, params);
 
-    // Trae nombre de sucursal desde branches
     const [branches] = await db.execute(`
       SELECT 
         COALESCE(b.nombre, CONCAT('Sucursal ', o.sucursal)) AS sucursal,
@@ -2158,19 +2010,19 @@ app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
       ORDER BY ingresos DESC
     `, params);
 
-    // topProducts solo si existe order_items
     let topProducts = [];
     try {
       const [tp] = await db.execute(`
         SELECT 
           p.nombre,
+          p.marca,
           SUM(oi.cantidad)  AS vendidos,
           SUM(oi.subtotal)  AS ingresos
         FROM order_items oi
         JOIN products p ON p.id = oi.product_id
         JOIN orders o ON o.id = oi.order_id
         ${whereSQL}
-        GROUP BY p.nombre
+        GROUP BY p.nombre, p.marca
         ORDER BY vendidos DESC
         LIMIT 10
       `, params);
@@ -2191,54 +2043,41 @@ app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
 });
 
 // ================================
-// 📊 ADMIN - ESTADÍSTICAS DE PRODUCTOS (NUEVO)
-// Agregar este endpoint ANTES del bloque "🚀 START SERVER"
-// en server.js, junto a los demás endpoints de /api/admin/products
+// 📊 ESTADÍSTICAS DE PRODUCTOS
 // ================================
 
-// 📊 RESUMEN ESTADÍSTICO DE PRODUCTOS
 app.get("/api/admin/products/stats/summary", authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
-
     const [stats] = await db.execute(`
-      SELECT
-        COUNT(*)                                                      AS total_productos,
-        SUM(CASE WHEN activo = 1 THEN 1 ELSE 0 END)                  AS activos,
-        SUM(CASE WHEN activo = 0 THEN 1 ELSE 0 END)                  AS inactivos,
-        COUNT(DISTINCT categoria)                                      AS total_categorias,
-        AVG(precio)                                                    AS precio_promedio,
-        MIN(precio)                                                    AS precio_minimo,
-        MAX(precio)                                                    AS precio_maximo
+      SELECT COUNT(*) AS total_productos,
+             SUM(CASE WHEN activo=1 THEN 1 ELSE 0 END) AS activos,
+             SUM(CASE WHEN activo=0 THEN 1 ELSE 0 END) AS inactivos,
+             COUNT(DISTINCT categoria) AS total_categorias,
+             COUNT(DISTINCT marca)     AS total_marcas,
+             AVG(precio) AS precio_promedio, MIN(precio) AS precio_minimo, MAX(precio) AS precio_maximo
       FROM products
     `);
-
     const [porCategoria] = await db.execute(`
-      SELECT
-        categoria,
-        COUNT(*) AS productos,
-        SUM(CASE WHEN activo = 1 THEN 1 ELSE 0 END) AS activos
-      FROM products
-      WHERE categoria IS NOT NULL AND categoria != ''
-      GROUP BY categoria
-      ORDER BY productos DESC
-      LIMIT 10
+      SELECT categoria, COUNT(*) AS productos, SUM(CASE WHEN activo=1 THEN 1 ELSE 0 END) AS activos
+      FROM products WHERE categoria IS NOT NULL AND categoria != ''
+      GROUP BY categoria ORDER BY productos DESC LIMIT 10
     `);
-
-    res.json({
-      ...stats[0],
-      porCategoria
-    });
+    const [porMarca] = await db.execute(`
+      SELECT marca, COUNT(*) AS productos, SUM(CASE WHEN activo=1 THEN 1 ELSE 0 END) AS activos
+      FROM products WHERE marca IS NOT NULL AND marca != ''
+      GROUP BY marca ORDER BY productos DESC LIMIT 10
+    `);
+    res.json({ ...stats[0], porCategoria, porMarca });
   } catch (err) {
-    console.error("Error obteniendo estadísticas de productos:", err);
-    res.status(500).json({ error: "Error obteniendo estadísticas de productos" });
+    res.status(500).json({ error: "Error obteniendo estadísticas", detalle: err.message });
   }
 });
 
 // ================================
 // 🚀 START SERVER
 // ================================
-// ✅ PON esto:
+
 if (process.env.NODE_ENV !== 'production') {
   const PORT = process.env.PORT || 1234;
   app.listen(PORT, () => {
