@@ -31,7 +31,7 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin) return callback(null, true); // permitir Postman/server
+    if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     } else {
@@ -41,11 +41,9 @@ app.use(cors({
   credentials: true
 }));
 
-
-// Rate limiting para prevenir brute force
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 5, // 5 intentos
+  windowMs: 15 * 60 * 1000, 
+  max: 5,
   message: { error: 'Demasiados intentos de login. Intenta en 15 minutos.' }
 });
 
@@ -94,9 +92,8 @@ async function getDB() {
 // ================================
 
 function sanitizeInput(input) {
-  if (typeof input !== 'string') return input;
-  // Remover caracteres peligrosos para SQL injection
-  return input.trim().replace(/['"`;\\]/g, '');
+if (typeof input !== 'string') return input;
+return input.trim().replace(/['"`;\\]/g, '');
 }
 
 function validateEmail(email) {
@@ -138,8 +135,7 @@ function authMiddleware(req, res, next) {
   
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    
-    // Validar que el token tenga los campos necesarios
+  
     if (!decoded.id || !decoded.rol) {
       return res.status(401).json({ error: 'Token inválido' });
     }
@@ -173,8 +169,7 @@ passport.use(new GoogleStrategy(
     try {
       const db = await getDB();
       const correo = profile.emails[0].value;
-      
-      // Validar email
+    
       if (!validateEmail(correo)) {
         return done(new Error('Email inválido'), null);
       }
@@ -223,8 +218,7 @@ passport.use(new GoogleStrategy(
           rol: 'cliente'
         };
       }
-      
-      // IMPORTANTE: Nunca permitir que un login por Google tenga rol admin
+    
       if (user.rol === 'admin') {
         user.rol = 'cliente';
       }
@@ -270,8 +264,7 @@ app.get('/', (req, res) => res.send('Servidor SportLike funcionando correctament
 
 app.post('/api/register', async (req, res) => {
   const { nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password, rol } = req.body;
-  
-  // Validaciones
+
   if (!nombre || !apellidoP || !usuario || !correo || !password) {
     return res.status(400).json({ error: 'Faltan campos requeridos' });
   }
@@ -287,14 +280,12 @@ app.post('/api/register', async (req, res) => {
   if (!validatePassword(password)) {
     return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres, una mayúscula, una minúscula, un número y un carácter especial' });
   }
-  
-  // 🚨 SEGURIDAD: Nunca permitir registro como admin desde el formulario
+
   const rolFinal = 'cliente';
   
   try {
     const db = await getDB();
-    
-    // Sanitizar inputs
+  
     const nombreSafe = sanitizeInput(nombre);
     const apellidoPSafe = sanitizeInput(apellidoP);
     const apellidoMSafe = apellidoM ? sanitizeInput(apellidoM) : null;
@@ -311,7 +302,7 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ error: 'Usuario, correo o teléfono ya registrado' });
     }
     
-    const hash = await bcrypt.hash(password, 12); // Aumentar rounds a 12
+    const hash = await bcrypt.hash(password, 12);
     
     const [result] = await db.execute(
       `INSERT INTO users (nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password, rol, verificado, createdAt, updatedAt)
@@ -1885,14 +1876,26 @@ app.get('/api/admin/users/stats/summary', authMiddleware, adminOnly, async (req,
     res.status(500).json({ error: 'Error obteniendo estadísticas' });
   }
 });
+// ================================================================
+// CORRECCIONES PARA server.js
+// 
+// Tu tabla orders tiene estas columnas reales:
+//   id, user_id, sucursal (int/FK), total, status, fecha
+//
+// El backend original usaba: estado, metodo_pago, direccion_envio
+// que NO existen en tu tabla → causaban los errores 500.
+//
+// INSTRUCCIONES:
+//   Reemplaza los 4 endpoints de órdenes en tu server.js
+//   con estos corregidos.
+// ================================================================
 
-// ================================
-// 📦 ADMIN - ÓRDENES
-// ================================
 
-// 📋 OBTENER TODAS LAS ÓRDENES
+// ================================================================
+// 📋 LISTAR ÓRDENES (con filtros y limit opcional)
+// ================================================================
 app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
-  const { estado, sucursal, from, to, user_id } = req.query;
+  const { status, sucursal, from, to, user_id, limit } = req.query;
 
   try {
     const db = await getDB();
@@ -1903,10 +1906,8 @@ app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
         o.user_id,
         o.total,
         o.fecha,
-        o.estado,
+        o.status,
         o.sucursal,
-        o.metodo_pago,
-        o.direccion_envio,
         u.nombre,
         u.apellidoP,
         u.usuario,
@@ -1918,9 +1919,9 @@ app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
 
     const params = [];
 
-    if (estado && estado !== 'all') {
-      sql += " AND o.estado = ?";
-      params.push(estado);
+    if (status && status !== 'all') {
+      sql += " AND o.status = ?";
+      params.push(status);
     }
 
     if (sucursal && sucursal !== 'all') {
@@ -1945,22 +1946,35 @@ app.get('/api/admin/orders', authMiddleware, adminOnly, async (req, res) => {
 
     sql += " ORDER BY o.fecha DESC";
 
+    const limitNum = parseInt(limit);
+    if (limitNum > 0) {
+      sql += ` LIMIT ${limitNum}`;
+    }
+
     const [rows] = await db.execute(sql, params);
     res.json(rows);
   } catch (err) {
-    console.error('Error obteniendo órdenes:', err);
-    res.status(500).json({ error: 'Error obteniendo órdenes' });
+    console.error('Error obteniendo órdenes:', err.message);
+    res.status(500).json({ error: 'Error obteniendo órdenes', detalle: err.message });
   }
 });
 
-// 📄 OBTENER DETALLE DE UNA ORDEN
+
+// ================================================================
+// 📄 DETALLE DE UNA ORDEN
+// ================================================================
 app.get('/api/admin/orders/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
     const [order] = await db.execute(`
       SELECT 
-        o.*,
+        o.id,
+        o.user_id,
+        o.total,
+        o.fecha,
+        o.status,
+        o.sucursal,
         u.nombre,
         u.apellidoP,
         u.apellidoM,
@@ -1976,93 +1990,105 @@ app.get('/api/admin/orders/:id', authMiddleware, adminOnly, async (req, res) => 
       return res.status(404).json({ error: 'Orden no encontrada' });
     }
 
-    const [items] = await db.execute(`
-      SELECT 
-        oi.*,
-        p.nombre,
-        p.imagen,
-        p.categoria
-      FROM order_items oi
-      JOIN products p ON p.id = oi.product_id
-      WHERE oi.order_id = ?
-    `, [req.params.id]);
+    // Intentar obtener items si existe la tabla order_items
+    let items = [];
+    try {
+      const [itemRows] = await db.execute(`
+        SELECT 
+          oi.*,
+          p.nombre,
+          p.imagen,
+          p.categoria
+        FROM order_items oi
+        JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ?
+      `, [req.params.id]);
+      items = itemRows;
+    } catch (e) {
+      console.warn('Tabla order_items no disponible:', e.message);
+    }
 
-    res.json({
-      order: order[0],
-      items: items
-    });
+    res.json({ order: order[0], items });
   } catch (err) {
-    console.error('Error obteniendo detalle de orden:', err);
-    res.status(500).json({ error: 'Error obteniendo orden' });
+    console.error('Error obteniendo detalle de orden:', err.message);
+    res.status(500).json({ error: 'Error obteniendo orden', detalle: err.message });
   }
 });
 
-// ✏️ ACTUALIZAR ESTADO DE ORDEN
+
+// ================================================================
+// ✏️ ACTUALIZAR STATUS DE ORDEN
+// ================================================================
 app.patch('/api/admin/orders/:id/status', authMiddleware, adminOnly, async (req, res) => {
-  const { estado } = req.body;
+  const { status } = req.body;
 
-  const estadosValidos = ['pendiente', 'procesando', 'enviado', 'entregado', 'cancelado'];
+  const statusValidos = ['pendiente', 'procesando', 'enviado', 'entregado', 'cancelado'];
 
-  if (!estado || !estadosValidos.includes(estado)) {
-    return res.status(400).json({ error: 'Estado inválido' });
+  if (!status || !statusValidos.includes(status)) {
+    return res.status(400).json({ error: 'Status inválido. Valores permitidos: ' + statusValidos.join(', ') });
   }
 
   try {
     const db = await getDB();
 
     const [exists] = await db.execute('SELECT id FROM orders WHERE id = ?', [req.params.id]);
-    
+
     if (exists.length === 0) {
       return res.status(404).json({ error: 'Orden no encontrada' });
     }
 
-    await db.execute(`
-      UPDATE orders 
-      SET estado = ?, updatedAt = NOW()
-      WHERE id = ?
-    `, [estado, req.params.id]);
+    await db.execute(
+      'UPDATE orders SET status = ? WHERE id = ?',
+      [status, req.params.id]
+    );
 
-    console.log(`✅ Estado de orden actualizado: Orden #${req.params.id} a '${estado}' por admin ${req.user.usuario}`);
-    res.json({ message: 'Estado actualizado correctamente' });
+    console.log(`✅ Status de orden actualizado: Orden #${req.params.id} → '${status}' por admin ${req.user.usuario}`);
+    res.json({ message: 'Status actualizado correctamente' });
   } catch (err) {
-    console.error('Error actualizando estado de orden:', err);
-    res.status(500).json({ error: 'Error actualizando estado' });
+    console.error('Error actualizando status de orden:', err.message);
+    res.status(500).json({ error: 'Error actualizando status', detalle: err.message });
   }
 });
 
+
+// ================================================================
 // 📊 ESTADÍSTICAS DE ÓRDENES
+// ================================================================
 app.get('/api/admin/orders/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
+    // Usa 'status' (nombre real de tu columna) con COALESCE para tabla vacía
     const [stats] = await db.execute(`
       SELECT 
-        COUNT(*) AS total_ordenes,
-        SUM(total) AS ingresos_totales,
-        AVG(total) AS ticket_promedio,
-        SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END) AS pendientes,
-        SUM(CASE WHEN estado = 'procesando' THEN 1 ELSE 0 END) AS procesando,
-        SUM(CASE WHEN estado = 'enviado' THEN 1 ELSE 0 END) AS enviado,
-        SUM(CASE WHEN estado = 'entregado' THEN 1 ELSE 0 END) AS entregadas,
-        SUM(CASE WHEN estado = 'cancelado' THEN 1 ELSE 0 END) AS canceladas
+        COUNT(*)                                                          AS total_ordenes,
+        COALESCE(SUM(total), 0)                                           AS ingresos_totales,
+        COALESCE(AVG(total), 0)                                           AS ticket_promedio,
+        SUM(CASE WHEN status = 'pendiente'  THEN 1 ELSE 0 END)           AS pendientes,
+        SUM(CASE WHEN status = 'procesando' THEN 1 ELSE 0 END)           AS procesando,
+        SUM(CASE WHEN status = 'enviado'    THEN 1 ELSE 0 END)           AS enviado,
+        SUM(CASE WHEN status = 'entregado'  THEN 1 ELSE 0 END)           AS entregadas,
+        SUM(CASE WHEN status = 'cancelado'  THEN 1 ELSE 0 END)           AS canceladas
       FROM orders
     `);
 
     const [porSucursal] = await db.execute(`
       SELECT 
-        sucursal,
-        COUNT(*) AS ordenes,
-        SUM(total) AS ingresos
-      FROM orders
-      GROUP BY sucursal
+        o.sucursal,
+        b.nombre                  AS nombre_sucursal,
+        COUNT(*)                  AS ordenes,
+        COALESCE(SUM(o.total), 0) AS ingresos
+      FROM orders o
+      LEFT JOIN branches b ON b.id = o.sucursal
+      GROUP BY o.sucursal, b.nombre
       ORDER BY ingresos DESC
     `);
 
     const [ventasPorDia] = await db.execute(`
       SELECT 
-        DATE(fecha) AS dia,
-        COUNT(*) AS ordenes,
-        SUM(total) AS ingresos
+        DATE(fecha)               AS dia,
+        COUNT(*)                  AS ordenes,
+        COALESCE(SUM(total), 0)   AS ingresos
       FROM orders
       WHERE fecha >= DATE_SUB(NOW(), INTERVAL 30 DAY)
       GROUP BY dia
@@ -2070,13 +2096,97 @@ app.get('/api/admin/orders/stats/summary', authMiddleware, adminOnly, async (req
     `);
 
     res.json({
-      resumen: stats[0],
-      porSucursal: porSucursal,
+      resumen:      stats[0],
+      porSucursal:  porSucursal,
       ventasPorDia: ventasPorDia
     });
   } catch (err) {
-    console.error('Error obteniendo estadísticas de órdenes:', err);
-    res.status(500).json({ error: 'Error obteniendo estadísticas' });
+    console.error('Error obteniendo estadísticas de órdenes:', err.message);
+    res.status(500).json({ error: 'Error obteniendo estadísticas', detalle: err.message });
+  }
+});
+
+
+// ================================================================
+// También corrige el endpoint /api/admin/dashboard que usa 'estado'
+// Reemplaza el bloque completo:
+// ================================================================
+app.get("/api/admin/dashboard", authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+    const { from, to, branch } = req.query;
+
+    let where = [];
+    let params = [];
+
+    if (from) {
+      where.push("o.fecha >= ?");
+      params.push(from);
+    }
+
+    if (to) {
+      where.push("o.fecha <= ?");
+      params.push(to);
+    }
+
+    if (branch && branch !== "all") {
+      where.push("o.sucursal = ?");
+      params.push(branch);
+    }
+
+    const whereSQL = where.length ? "WHERE " + where.join(" AND ") : "";
+
+    const [timeline] = await db.execute(`
+      SELECT 
+        DATE(o.fecha)             AS dia,
+        COALESCE(SUM(o.total), 0) AS total
+      FROM orders o
+      ${whereSQL}
+      GROUP BY dia
+      ORDER BY dia
+    `, params);
+
+    // Trae nombre de sucursal desde branches
+    const [branches] = await db.execute(`
+      SELECT 
+        COALESCE(b.nombre, CONCAT('Sucursal ', o.sucursal)) AS sucursal,
+        COALESCE(SUM(o.total), 0)                           AS ingresos
+      FROM orders o
+      LEFT JOIN branches b ON b.id = o.sucursal
+      ${whereSQL}
+      GROUP BY o.sucursal, b.nombre
+      ORDER BY ingresos DESC
+    `, params);
+
+    // topProducts solo si existe order_items
+    let topProducts = [];
+    try {
+      const [tp] = await db.execute(`
+        SELECT 
+          p.nombre,
+          SUM(oi.cantidad)  AS vendidos,
+          SUM(oi.subtotal)  AS ingresos
+        FROM order_items oi
+        JOIN products p ON p.id = oi.product_id
+        JOIN orders o ON o.id = oi.order_id
+        ${whereSQL}
+        GROUP BY p.nombre
+        ORDER BY vendidos DESC
+        LIMIT 10
+      `, params);
+      topProducts = tp;
+    } catch (e) {
+      console.warn('order_items no disponible:', e.message);
+    }
+
+    res.json({
+      salesTimeline: timeline,
+      branchRanking: branches,
+      topProducts
+    });
+  } catch (err) {
+    console.error("Error en dashboard admin:", err.message);
+    res.status(500).json({ error: "Error generando dashboard admin", detalle: err.message });
   }
 });
 
