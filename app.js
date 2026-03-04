@@ -7,13 +7,13 @@ require('dotenv').config();
 
 const { loginLimiter, generalLimiter } = require('./middlewares/rateLimiter');
 
-// ── Rutas públicas ──────────────────────────────────────────
+// ── Rutas públicas
 const authRoutes     = require('./routes/public/auth.routes');
 const passwordRoutes = require('./routes/public/password.routes');
 const profileRoutes  = require('./routes/public/profile.routes');
 const publicProducts = require('./routes/public/products.routes');
 
-// ── Rutas admin ─────────────────────────────────────────────
+// ── Rutas admin 
 const adminProducts  = require('./routes/admin/products.routes');
 const adminInventory = require('./routes/admin/inventory.routes');
 const adminBranches  = require('./routes/admin/branches.routes');
@@ -24,9 +24,7 @@ const adminDashboard = require('./routes/admin/dashboard.routes');
 const app = express();
 app.set('trust proxy', 1);
 
-// ================================
-// 🛡️ SEGURIDAD
-// ================================
+// SEGURIDAD
 
 app.use(helmet());
 
@@ -45,9 +43,7 @@ app.use(cors({
   credentials: true
 }));
 
-// ================================
-// 🔐 JWT SECRET VALIDATION
-// ================================
+// JWT SECRET VALIDATION
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -56,9 +52,7 @@ if (!JWT_SECRET || JWT_SECRET === 'change_this_secret') {
   process.exit(1);
 }
 
-// ================================
-// ⚙️ MIDDLEWARES GENERALES
-// ================================
+// MIDDLEWARES GENERALES
 
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(passport.initialize());
@@ -66,15 +60,11 @@ app.use(passport.initialize());
 app.use('/api/login', loginLimiter);
 app.use('/api/', generalLimiter);
 
-// ================================
-// 📍 HEALTH CHECK
-// ================================
+// HEALTH CHECK
 
 app.get('/', (req, res) => res.send('Servidor SportLike funcionando correctamente'));
 
-// ================================
-// 🔀 RUTAS PÚBLICAS
-// ================================
+// RUTAS PÚBLICAS
 
 app.use('/auth', authRoutes);              // /auth/google, /auth/google/callback
 app.use('/api',  authRoutes);              // /api/register, /api/login, /api/verify-email
@@ -82,9 +72,7 @@ app.use('/api',  passwordRoutes);          // /api/forgot-password, /api/reset-p
 app.use('/api',  profileRoutes);           // /api/me, /api/update-profile, /api/update-password
 app.use('/api/products', publicProducts);  // /api/products, /api/products/categories, /api/products/marcas
 
-// ================================
-// 🔀 RUTAS ADMIN
-// ================================
+// RUTAS ADMIN
 
 app.use('/api/admin/products',  adminProducts);   // /api/admin/products + CRUD completo
 app.use('/api/admin/inventory', adminInventory);  // /api/admin/inventory + transferencias
