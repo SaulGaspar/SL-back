@@ -7,21 +7,8 @@ const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { createTransporter } = require('../../helpers/mailer');
 const { sanitizeInput, validateUsername, generarPasswordAleatoria } = require('../../helpers/validators');
 
-
-
-router.get('/users', authMiddleware, adminOnly, async (req, res) => {
-  try {
-    const db = await getDB();
-    const [rows] = await db.execute('SELECT id, nombre, apellidoP, apellidoM, correo, usuario, rol FROM users');
-    res.json(rows);
-  } catch (err) {
-    console.error('Error obteniendo usuarios:', err);
-    res.status(500).json({ error: 'Error al obtener usuarios' });
-  }
-});
-
-
-router.get('/admin/users/stats/summary', authMiddleware, adminOnly, async (req, res) => {
+// GET /api/admin/users/stats/summary
+router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
@@ -50,9 +37,8 @@ router.get('/admin/users/stats/summary', authMiddleware, adminOnly, async (req, 
   }
 });
 
-
-
-router.get('/admin/users', authMiddleware, adminOnly, async (req, res) => {
+// GET /api/admin/users
+router.get('/', authMiddleware, adminOnly, async (req, res) => {
   const { rol, verificado, search } = req.query;
 
   try {
@@ -67,7 +53,7 @@ router.get('/admin/users', authMiddleware, adminOnly, async (req, res) => {
     const params = [];
 
     if (rol && rol !== 'all') { sql += ' AND rol = ?'; params.push(rol); }
-    if (verificado !== undefined) { sql += ' AND verificado = ?'; params.push(verificado); }
+    if (verificado !== undefined && verificado !== 'all') { sql += ' AND verificado = ?'; params.push(verificado); }
     if (search) {
       sql += ' AND (nombre LIKE ? OR apellidoP LIKE ? OR usuario LIKE ? OR correo LIKE ?)';
       const s = `%${search}%`;
@@ -84,9 +70,8 @@ router.get('/admin/users', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-
-
-router.get('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
+// GET /api/admin/users/:id
+router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute(`
@@ -108,9 +93,8 @@ router.get('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-
-
-router.put('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
+// PUT /api/admin/users/:id
+router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
   const { nombre, apellidoP, apellidoM, telefono, usuario, rol, verificado } = req.body;
 
   if (!nombre || !apellidoP || !usuario)  return res.status(400).json({ error: 'Faltan campos requeridos' });
@@ -148,9 +132,8 @@ router.put('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-
-
-router.delete('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
+// DELETE /api/admin/users/:id
+router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
@@ -171,9 +154,8 @@ router.delete('/admin/users/:id', authMiddleware, adminOnly, async (req, res) =>
   }
 });
 
-
-
-router.patch('/admin/users/:id/unlock', authMiddleware, adminOnly, async (req, res) => {
+// PATCH /api/admin/users/:id/unlock
+router.patch('/:id/unlock', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
     const [exists] = await db.execute('SELECT id, usuario FROM users WHERE id = ?', [req.params.id]);
@@ -189,9 +171,8 @@ router.patch('/admin/users/:id/unlock', authMiddleware, adminOnly, async (req, r
   }
 });
 
-
-
-router.post('/admin/users/:id/reset-password', authMiddleware, adminOnly, async (req, res) => {
+// POST /api/admin/users/:id/reset-password
+router.post('/:id/reset-password', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
     const [user] = await db.execute('SELECT id, usuario, correo, nombre FROM users WHERE id = ?', [req.params.id]);
