@@ -7,9 +7,6 @@ const { getDB } = require('../../config/db');
 const { createTransporter } = require('../../helpers/mailer');
 const { sanitizeInput, validateEmail, validatePassword } = require('../../helpers/validators');
 
-// ================================
-// POST /api/forgot-password
-// ================================
 
 router.post('/forgot-password', async (req, res) => {
   const { correo } = req.body;
@@ -52,9 +49,6 @@ router.post('/forgot-password', async (req, res) => {
   }
 });
 
-// ================================
-// POST /api/reset-password
-// ================================
 
 router.post('/reset-password', async (req, res) => {
   const { token, password } = req.body;

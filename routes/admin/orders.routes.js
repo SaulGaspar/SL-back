@@ -6,10 +6,6 @@ const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 
 const STATUS_VALIDOS = ['pendiente', 'procesando', 'enviado', 'entregado', 'cancelado'];
 
-// ================================
-// 📊 GET /api/admin/orders/stats/summary
-// (debe ir ANTES de /:id para no colisionar)
-// ================================
 
 router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {

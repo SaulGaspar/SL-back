@@ -5,10 +5,7 @@ const { getDB } = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { sanitizeInput } = require('../../helpers/validators');
 
-// ================================
-// GET /api/admin/products/stats/summary
-// (declarado ANTES de /:id para evitar colisión)
-// ================================
+
 
 router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -107,9 +104,7 @@ router.get('/marcas', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
-// GET /api/admin/products
-// ================================
+
 
 router.get('/', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -132,9 +127,7 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
-// GET /api/admin/products/:id
-// ================================
+
 
 router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -160,9 +153,7 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
-// POST /api/admin/products
-// ================================
+
 
 router.post('/', authMiddleware, adminOnly, async (req, res) => {
   const { nombre, marca, descripcion, precio, categoria, imagen, talla, colores, inventario } = req.body;
@@ -207,9 +198,7 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
-// PUT /api/admin/products/:id
-// ================================
+
 
 router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
   const { nombre, marca, descripcion, precio, categoria, imagen, talla, colores, activo } = req.body;

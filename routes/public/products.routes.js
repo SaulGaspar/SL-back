@@ -3,9 +3,7 @@ const router = express.Router();
 
 const { getDB } = require('../../config/db');
 
-// ================================
-// GET /api/products
-// ================================
+
 
 router.get('/', async (req, res) => {
   const { q, categoria, marca } = req.query;
@@ -42,9 +40,6 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ================================
-// GET /api/categories
-// ================================
 
 router.get('/categories', async (req, res) => {
   try {
@@ -60,9 +55,6 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-// ================================
-// GET /api/marcas
-// ================================
 
 router.get('/marcas', async (req, res) => {
   try {

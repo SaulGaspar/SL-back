@@ -6,9 +6,6 @@ const { getDB } = require('../../config/db');
 const { authMiddleware } = require('../../middlewares/auth');
 const { sanitizeInput, validatePassword, validateUsername } = require('../../helpers/validators');
 
-// ================================
-// GET /api/me
-// ================================
 
 router.get('/me', authMiddleware, async (req, res) => {
   try {
@@ -27,9 +24,6 @@ router.get('/me', authMiddleware, async (req, res) => {
   }
 });
 
-// ================================
-// POST /api/update-profile
-// ================================
 
 router.post('/update-profile', authMiddleware, async (req, res) => {
   const { nombre, apellidoP, apellidoM, telefono, usuario } = req.body;
@@ -68,9 +62,6 @@ router.post('/update-profile', authMiddleware, async (req, res) => {
   }
 });
 
-// ================================
-// POST /api/update-password
-// ================================
 
 router.post('/update-password', authMiddleware, async (req, res) => {
   const { actual, nueva } = req.body;

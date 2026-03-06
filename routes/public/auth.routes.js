@@ -17,9 +17,6 @@ const {
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
-// ================================
-// 🔐 GOOGLE OAUTH - STRATEGY
-// ================================
 
 passport.use(new GoogleStrategy(
   {
@@ -99,9 +96,7 @@ router.get('/google/callback', passport.authenticate('google', { session: false 
   res.redirect(`${process.env.CLIENT_URL}/google-callback?token=${req.user}`);
 });
 
-// ================================
-// POST /api/register
-// ================================
+
 
 router.post('/register', async (req, res) => {
   const { nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password } = req.body;
@@ -158,9 +153,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// ================================
-// POST /api/login
-// ================================
+
 
 router.post('/login', async (req, res) => {
   const { usuario, password } = req.body;
@@ -233,9 +226,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// ================================
-// GET /api/verify-email
-// ================================
+
 
 router.get('/verify-email', async (req, res) => {
   const token = req.query.token;

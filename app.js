@@ -20,6 +20,7 @@ const adminBranches  = require('./routes/admin/branches.routes');
 const adminUsers     = require('./routes/admin/users.routes');
 const adminOrders    = require('./routes/admin/orders.routes');
 const adminDashboard = require('./routes/admin/dashboard.routes');
+const backupsRoutes = require('./routes/admin/backups.routes');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -80,5 +81,6 @@ app.use('/api/admin/branches',  adminBranches);   // /api/admin/branches
 app.use('/api/admin/users',     adminUsers);      // /api/admin/users
 app.use('/api/admin/orders',    adminOrders);     // /api/admin/orders
 app.use('/api/admin/dashboard', adminDashboard);  // /api/admin/dashboard
+app.use('/api/admin/backups', backupsRoutes);
 
 module.exports = app;

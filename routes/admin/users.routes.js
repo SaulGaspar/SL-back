@@ -7,9 +7,7 @@ const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { createTransporter } = require('../../helpers/mailer');
 const { sanitizeInput, validateUsername, generarPasswordAleatoria } = require('../../helpers/validators');
 
-// ================================
-// 👥 GET /api/users  (básico, sin admin)
-// ================================
+
 
 router.get('/users', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -22,10 +20,6 @@ router.get('/users', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
-// 📊 GET /api/admin/users/stats/summary
-// (debe ir ANTES de /:id para no colisionar)
-// ================================
 
 router.get('/admin/users/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -56,9 +50,7 @@ router.get('/admin/users/stats/summary', authMiddleware, adminOnly, async (req, 
   }
 });
 
-// ================================
-// 👥 GET /api/admin/users
-// ================================
+
 
 router.get('/admin/users', authMiddleware, adminOnly, async (req, res) => {
   const { rol, verificado, search } = req.query;
@@ -92,9 +84,7 @@ router.get('/admin/users', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
-// 👤 GET /api/admin/users/:id
-// ================================
+
 
 router.get('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -118,9 +108,7 @@ router.get('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
-// ✏️ PUT /api/admin/users/:id
-// ================================
+
 
 router.put('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   const { nombre, apellidoP, apellidoM, telefono, usuario, rol, verificado } = req.body;
@@ -160,9 +148,7 @@ router.put('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
-// 🗑️ DELETE /api/admin/users/:id
-// ================================
+
 
 router.delete('/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -185,9 +171,7 @@ router.delete('/admin/users/:id', authMiddleware, adminOnly, async (req, res) =>
   }
 });
 
-// ================================
-// 🔓 PATCH /api/admin/users/:id/unlock
-// ================================
+
 
 router.patch('/admin/users/:id/unlock', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -205,9 +189,7 @@ router.patch('/admin/users/:id/unlock', authMiddleware, adminOnly, async (req, r
   }
 });
 
-// ================================
-// 🔑 POST /api/admin/users/:id/reset-password
-// ================================
+
 
 router.post('/admin/users/:id/reset-password', authMiddleware, adminOnly, async (req, res) => {
   try {
