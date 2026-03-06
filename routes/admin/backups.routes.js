@@ -11,7 +11,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-const BUCKET = 'backups';
+const BUCKET = 'backup';
 
 // ── Tablas a respaldar (en orden por dependencias FK) ────────────────────────
 const TABLAS = [
