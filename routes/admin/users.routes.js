@@ -83,7 +83,7 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
     const [orders] = await db.execute(`
-      SELECT id, total, fecha, estado, sucursal FROM orders WHERE user_id = ? ORDER BY fecha DESC LIMIT 10
+      SELECT id, total, fecha, status, sucursal FROM orders WHERE user_id = ? ORDER BY fecha DESC LIMIT 10
     `, [req.params.id]);
 
     res.json({ user: rows[0], orders });
