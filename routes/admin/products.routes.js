@@ -4,6 +4,7 @@ const router = express.Router();
 const { getDB } = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { sanitizeInput } = require('../../helpers/validators');
+const { sanitizeLog } = require('../../helpers/sanitizeLog');
 
 
 
@@ -190,7 +191,7 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
       }
     }
 
-    console.log(`✅ Producto creado: ${nombreSafe} (ID: ${productId}) por ${req.user.usuario}`);
+    console.log(`✅ Producto creado: ${sanitizeLog(nombreSafe)} (ID: ${sanitizeLog(productId)}) por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Producto creado correctamente', productId });
   } catch (err) {
     console.error('Error creando producto:', err);
@@ -223,7 +224,7 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
       WHERE id=?
     `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe, activo, req.params.id]);
 
-    console.log(`✅ Producto actualizado: ID ${req.params.id} por ${req.user.usuario}`);
+    console.log(`✅ Producto actualizado: ID ${sanitizeLog(req.params.id)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Producto actualizado correctamente' });
   } catch (err) {
     console.error('Error actualizando producto:', err);
@@ -252,7 +253,7 @@ router.put('/:id/inventory', authMiddleware, adminOnly, async (req, res) => {
       }
     }
 
-    console.log(`✅ Inventario actualizado para producto ID ${req.params.id} por ${req.user.usuario}`);
+    console.log(`✅ Inventario actualizado para producto ID ${sanitizeLog(req.params.id)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Inventario actualizado correctamente' });
   } catch (err) {
     console.error('Error actualizando inventario del producto:', err);
@@ -269,7 +270,7 @@ router.patch('/:id/reactivate', authMiddleware, adminOnly, async (req, res) => {
 
     await db.execute('UPDATE products SET activo = 1, updatedAt = NOW() WHERE id = ?', [req.params.id]);
 
-    console.log(`✅ Producto reactivado: ${exists[0].nombre} por ${req.user.usuario}`);
+    console.log(`✅ Producto reactivado: ${sanitizeLog(exists[0].nombre)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Producto reactivado correctamente' });
   } catch (err) {
     res.status(500).json({ error: 'Error reactivando producto' });
@@ -285,7 +286,7 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
 
     await db.execute('UPDATE products SET activo = 0, updatedAt = NOW() WHERE id = ?', [req.params.id]);
 
-    console.log(`⚠️ Producto desactivado: ${exists[0].nombre} por ${req.user.usuario}`);
+    console.log(`⚠️ Producto desactivado: ${sanitizeLog(exists[0].nombre)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Producto desactivado correctamente' });
   } catch (err) {
     res.status(500).json({ error: 'Error eliminando producto' });
@@ -302,7 +303,7 @@ router.delete('/:id/permanent', authMiddleware, adminOnly, async (req, res) => {
     await db.execute('DELETE FROM inventory WHERE product_id = ?', [req.params.id]);
     await db.execute('DELETE FROM products WHERE id = ?', [req.params.id]);
 
-    console.log(`🗑️ Producto eliminado permanentemente: ${exists[0].nombre} por ${req.user.usuario}`);
+    console.log(`🗑️ Producto eliminado permanentemente: ${sanitizeLog(exists[0].nombre)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Producto eliminado permanentemente' });
   } catch (err) {
     res.status(500).json({ error: 'Error eliminando producto permanentemente' });

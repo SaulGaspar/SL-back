@@ -6,6 +6,7 @@ const { getDB } = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { createTransporter } = require('../../helpers/mailer');
 const { sanitizeInput, validateUsername, generarPasswordAleatoria } = require('../../helpers/validators');
+const { sanitizeLog } = require('../../helpers/sanitizeLog');
 
 // GET /api/admin/users/stats/summary
 router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
@@ -124,7 +125,7 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
       WHERE id=?
     `, [nombreSafe, apellidoPSafe, apellidoMSafe, telefonoSafe, usuarioSafe, rol || 'cliente', verificado !== undefined ? verificado : 1, req.params.id]);
 
-    console.log(`✅ Usuario actualizado: ${usuarioSafe} (ID: ${req.params.id}) por admin ${req.user.usuario}`);
+    console.log(`✅ Usuario actualizado: ${sanitizeLog(usuarioSafe)} (ID: ${sanitizeLog(req.params.id)}) por admin ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Usuario actualizado correctamente' });
   } catch (err) {
     console.error('Error actualizando usuario:', err);
@@ -146,7 +147,7 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
 
     await db.execute('UPDATE users SET verificado = 0, updatedAt = NOW() WHERE id = ?', [req.params.id]);
 
-    console.log(`⚠️ Usuario desactivado: ${exists[0].usuario} (ID: ${req.params.id}) por admin ${req.user.usuario}`);
+    console.log(`⚠️ Usuario desactivado: ${sanitizeLog(exists[0].usuario)} (ID: ${sanitizeLog(req.params.id)}) por admin ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Usuario desactivado correctamente' });
   } catch (err) {
     console.error('Error eliminando usuario:', err);
@@ -163,7 +164,7 @@ router.patch('/:id/unlock', authMiddleware, adminOnly, async (req, res) => {
 
     await db.execute('UPDATE users SET failedAttempts = 0, lockedUntil = NULL, updatedAt = NOW() WHERE id = ?', [req.params.id]);
 
-    console.log(`🔓 Usuario desbloqueado: ${exists[0].usuario} por admin ${req.user.usuario}`);
+    console.log(`🔓 Usuario desbloqueado: ${sanitizeLog(exists[0].usuario)} por admin ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Usuario desbloqueado correctamente' });
   } catch (err) {
     console.error('Error desbloqueando usuario:', err);
@@ -179,7 +180,7 @@ router.post('/:id/reset-password', authMiddleware, adminOnly, async (req, res) =
     if (user.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
     const tempPassword = generarPasswordAleatoria(12);
-    const hash = await bcrypt.hash(tempPassword, 12);
+    const hash = await bcrypt.hash(tempPassword, 12); // NOSONAR - hash is dynamically generated, not hard-coded
 
     await db.execute('UPDATE users SET password = ?, updatedAt = NOW() WHERE id = ?', [hash, req.params.id]);
 
@@ -191,7 +192,7 @@ router.post('/:id/reset-password', authMiddleware, adminOnly, async (req, res) =
       html: `<p>Hola ${user[0].nombre},</p><p>Tu contraseña ha sido restablecida por un administrador.</p><p><strong>Tu nueva contraseña temporal es:</strong> ${tempPassword}</p><p>Por seguridad, te recomendamos cambiarla al iniciar sesión.</p>`
     });
 
-    console.log(`🔑 Contraseña reseteada para: ${user[0].usuario} por admin ${req.user.usuario}`);
+    console.log(`🔑 Contraseña reseteada para: ${sanitizeLog(user[0].usuario)} por admin ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Contraseña restablecida. Se ha enviado la nueva contraseña al correo del usuario.', tempPassword });
   } catch (err) {
     console.error('Error reseteando contraseña:', err);

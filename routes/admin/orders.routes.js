@@ -3,6 +3,7 @@ const router = express.Router();
 
 const { getDB } = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
+const { sanitizeLog } = require('../../helpers/sanitizeLog');
 
 const STATUS_VALIDOS = ['pendiente', 'procesando', 'enviado', 'entregado', 'cancelado'];
 
@@ -134,7 +135,7 @@ router.patch('/:id/status', authMiddleware, adminOnly, async (req, res) => {
 
     await db.execute('UPDATE orders SET status = ? WHERE id = ?', [status, req.params.id]);
 
-    console.log(`✅ Status de orden actualizado: Orden #${req.params.id} → '${status}' por admin ${req.user.usuario}`);
+    console.log(`✅ Status de orden actualizado: Orden #${sanitizeLog(req.params.id)} → '${sanitizeLog(status)}' por admin ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Status actualizado correctamente' });
   } catch (err) {
     console.error('Error actualizando status de orden:', err.message);

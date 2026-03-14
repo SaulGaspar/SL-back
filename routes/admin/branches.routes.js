@@ -4,6 +4,7 @@ const router = express.Router();
 const { getDB } = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { sanitizeInput } = require('../../helpers/validators');
+const { sanitizeLog } = require('../../helpers/sanitizeLog');
 
 // ================================
 // 🏪 GET /api/admin/branches
@@ -54,7 +55,7 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
       [nombreSafe, direccionSafe, telefonoSafe]
     );
 
-    console.log(`✅ Sucursal creada: ${nombreSafe} por ${req.user.usuario}`);
+    console.log(`✅ Sucursal creada: ${sanitizeLog(nombreSafe)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Sucursal creada correctamente' });
   } catch (err) {
     console.error('Error creando sucursal:', err);
@@ -88,7 +89,7 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
       [nombreSafe, direccionSafe, telefonoSafe, activo, req.params.id]
     );
 
-    console.log(`✅ Sucursal actualizada: ID ${req.params.id} por ${req.user.usuario}`);
+    console.log(`✅ Sucursal actualizada: ID ${sanitizeLog(req.params.id)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Sucursal actualizada correctamente' });
   } catch (err) {
     console.error('Error actualizando sucursal:', err);
@@ -114,7 +115,7 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
 
     await db.execute('UPDATE branches SET activo = 0 WHERE id = ?', [req.params.id]);
 
-    console.log(`⚠️ Sucursal desactivada: ${exists[0].nombre} por ${req.user.usuario}`);
+    console.log(`⚠️ Sucursal desactivada: ${sanitizeLog(exists[0].nombre)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Sucursal desactivada correctamente' });
   } catch (err) {
     console.error('Error eliminando sucursal:', err);
