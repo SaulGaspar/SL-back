@@ -247,4 +247,114 @@ router.post('/transfer', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ============================================================
+// Agregar estas rutas en inventory.routes.js
+// ANTES de module.exports = router;
+// ============================================================
+
+// ================================
+// ➕ POST /api/admin/inventory/batch
+// Inserta múltiples registros en UNA sola conexión MySQL
+// Body: { items: [{ product_id, branch_id, stock, min_stock }] }
+// ================================
+
+router.post('/batch', authMiddleware, adminOnly, async (req, res) => {
+  const { items } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Se requiere un array items no vacío' });
+  }
+
+  try {
+    const db = await getDB();
+    let created = 0, updated = 0, errors = 0;
+    const errorDetails = [];
+
+    for (const item of items) {
+      const { product_id, branch_id, stock, min_stock } = item;
+      if (!product_id || !branch_id || stock === undefined) { errors++; continue; }
+
+      try {
+        // Verificar si ya existe
+        const [exists] = await db.execute(
+          'SELECT id FROM inventory WHERE product_id = ? AND branch_id = ?',
+          [product_id, branch_id]
+        );
+
+        if (exists.length > 0) {
+          // Hacer upsert — actualizar en lugar de fallar
+          await db.execute(
+            'UPDATE inventory SET stock = ?, min_stock = ? WHERE product_id = ? AND branch_id = ?',
+            [stock, min_stock || 40, product_id, branch_id]
+          );
+          updated++;
+        } else {
+          // Verificar producto activo
+          const [product] = await db.execute(
+            'SELECT id, activo FROM products WHERE id = ?', [product_id]
+          );
+          if (product.length === 0 || product[0].activo === 0) { errors++; continue; }
+
+          await db.execute(
+            'INSERT INTO inventory (product_id, branch_id, stock, min_stock) VALUES (?, ?, ?, ?)',
+            [product_id, branch_id, stock, min_stock || 40]
+          );
+          created++;
+        }
+      } catch (itemErr) {
+        console.error(`Error en item product_id=${product_id} branch_id=${branch_id}:`, itemErr.message);
+        errors++;
+      }
+    }
+
+    console.log(`✅ Batch inventory: ${created} creados, ${updated} actualizados, ${errors} errores`);
+    res.json({ created, updated, errors, total: items.length });
+
+  } catch (err) {
+    console.error('Error en batch inventory:', err);
+    res.status(500).json({ error: 'Error en importación batch' });
+  }
+});
+
+// ================================
+// ✏️ PUT /api/admin/inventory/batch-update
+// Actualiza múltiples registros en UNA sola conexión
+// Body: { items: [{ id, stock, min_stock }] }
+// ================================
+
+router.put('/batch-update', authMiddleware, adminOnly, async (req, res) => {
+  const { items } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Se requiere un array items no vacío' });
+  }
+
+  try {
+    const db = await getDB();
+    let updated = 0, errors = 0;
+
+    for (const item of items) {
+      const { id, stock, min_stock } = item;
+      if (!id || stock === undefined) { errors++; continue; }
+      try {
+        await db.execute(
+          'UPDATE inventory SET stock = ?, min_stock = ? WHERE id = ?',
+          [stock, min_stock || 40, id]
+        );
+        updated++;
+      } catch (itemErr) {
+        console.error(`Error actualizando id=${id}:`, itemErr.message);
+        errors++;
+      }
+    }
+
+    console.log(`✅ Batch update inventory: ${updated} actualizados, ${errors} errores`);
+    res.json({ updated, errors, total: items.length });
+
+  } catch (err) {
+    console.error('Error en batch-update inventory:', err);
+    res.status(500).json({ error: 'Error en actualización batch' });
+  }
+});
+
 module.exports = router;
