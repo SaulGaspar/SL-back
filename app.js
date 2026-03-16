@@ -22,14 +22,15 @@ const adminOrders    = require('./routes/admin/orders.routes');
 const adminDashboard = require('./routes/admin/dashboard.routes');
 const backupsRoutes  = require('./routes/admin/backups.routes');
 const monitorRoutes  = require('./routes/admin/Monitor.routes');
-const reportsRoutes = require('./routes/admin/Reports.routes');
+const reportsRoutes  = require('./routes/admin/Reports.routes');
 
-app.use('/api/admin/reports', reportsRoutes);
+// ─────────────────────────────────────────────────────────────
+// app se declara DESPUÉS de todos los requires
+// ─────────────────────────────────────────────────────────────
 const app = express();
 app.set('trust proxy', 1);
 
 // SEGURIDAD
-
 app.use(helmet());
 
 const allowedOrigins = [
@@ -48,43 +49,37 @@ app.use(cors({
 }));
 
 // JWT SECRET VALIDATION
-
 const JWT_SECRET = process.env.JWT_SECRET;
-
 if (!JWT_SECRET || JWT_SECRET === 'change_this_secret') {
   console.error('❌ ERROR: JWT_SECRET no configurado o usando valor por defecto inseguro');
   process.exit(1);
 }
 
 // MIDDLEWARES GENERALES
-
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(passport.initialize());
-
 app.use('/api/login', loginLimiter);
 app.use('/api/', generalLimiter);
 
 // HEALTH CHECK
-
 app.get('/', (req, res) => res.send('Servidor SportLike funcionando correctamente'));
 
 // RUTAS PÚBLICAS
-
-app.use('/auth', authRoutes);              // /auth/google, /auth/google/callback
-app.use('/api',  authRoutes);              // /api/register, /api/login, /api/verify-email
-app.use('/api',  passwordRoutes);          // /api/forgot-password, /api/reset-password
-app.use('/api',  profileRoutes);           // /api/me, /api/update-profile, /api/update-password
-app.use('/api/products', publicProducts);  // /api/products, /api/products/categories, /api/products/marcas
+app.use('/auth', authRoutes);             // /auth/google, /auth/google/callback
+app.use('/api',  authRoutes);             // /api/register, /api/login, /api/verify-email
+app.use('/api',  passwordRoutes);         // /api/forgot-password, /api/reset-password
+app.use('/api',  profileRoutes);          // /api/me, /api/update-profile, /api/update-password
+app.use('/api/products', publicProducts); // /api/products, /api/products/categories
 
 // RUTAS ADMIN
-
-app.use('/api/admin/products',  adminProducts);   // /api/admin/products + CRUD completo
-app.use('/api/admin/inventory', adminInventory);  // /api/admin/inventory + transferencias
-app.use('/api/admin/branches',  adminBranches);   // /api/admin/branches
-app.use('/api/admin/users',     adminUsers);      // /api/admin/users
-app.use('/api/admin/orders',    adminOrders);     // /api/admin/orders
-app.use('/api/admin/dashboard', adminDashboard);  // /api/admin/dashboard
+app.use('/api/admin/products',  adminProducts);
+app.use('/api/admin/inventory', adminInventory);
+app.use('/api/admin/branches',  adminBranches);
+app.use('/api/admin/users',     adminUsers);
+app.use('/api/admin/orders',    adminOrders);
+app.use('/api/admin/dashboard', adminDashboard);
 app.use('/api/admin/backups',   backupsRoutes);
-app.use('/api/admin/monitor',   monitorRoutes);   // ← NUEVO: /api/admin/monitor/overview|activity|integrity
+app.use('/api/admin/monitor',   monitorRoutes);
+app.use('/api/admin/reports',   reportsRoutes);  // ← aquí, DESPUÉS de const app
 
 module.exports = app;
