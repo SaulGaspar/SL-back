@@ -40,11 +40,15 @@ router.get('/overview', authMiddleware, adminOnly, async (req, res) => {
 
     // Conteos por tabla
     const [rowCounts] = await db.execute(`
-      SELECT table_name, table_rows,
+      SELECT 
+        table_name   AS tname,
+        table_rows   AS trows,
         ROUND((data_length + index_length) / 1024, 2) AS size_kb,
-        ROUND(data_length / 1024, 2) AS data_kb,
-        ROUND(index_length / 1024, 2) AS index_kb,
-        create_time, update_time, engine
+        ROUND(data_length / 1024, 2)                  AS data_kb,
+        ROUND(index_length / 1024, 2)                 AS index_kb,
+        create_time  AS created_at,
+        update_time  AS updated_at,
+        engine       AS tengine
       FROM information_schema.tables
       WHERE table_schema = DATABASE()
       ORDER BY (data_length + index_length) DESC
@@ -68,14 +72,14 @@ router.get('/overview', authMiddleware, adminOnly, async (req, res) => {
         slow_queries:    parseInt(slowQ[0]?.Value       || 0),
       },
       tables: rowCounts.map(t => ({
-        name:      t.table_name,
-        rows:      t.table_rows      || 0,
-        size_kb:   t.size_kb         || 0,
-        data_kb:   t.data_kb         || 0,
-        index_kb:  t.index_kb        || 0,
-        engine:    t.engine          || 'N/A',
-        created:   t.create_time,
-        updated:   t.update_time,
+        name:      t.tname    || t.table_name   || t.TABLE_NAME   || '?',
+        rows:      t.trows    || t.table_rows   || t.TABLE_ROWS   || 0,
+        size_kb:   t.size_kb  || 0,
+        data_kb:   t.data_kb  || 0,
+        index_kb:  t.index_kb || 0,
+        engine:    t.tengine  || t.engine       || t.ENGINE       || 'N/A',
+        created:   t.created_at || t.create_time,
+        updated:   t.updated_at || t.update_time,
       })),
     });
   } catch (err) {
@@ -93,14 +97,28 @@ router.get('/activity', authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
 
     // Pedidos por día (últimos 14 días)
-    const [ordersByDay] = await db.execute(`
-      SELECT DATE(createdAt) AS dia, COUNT(*) AS total,
-        SUM(total) AS monto
-      FROM orders
-      WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 14 DAY)
-      GROUP BY DATE(createdAt)
-      ORDER BY dia ASC
-    `);
+    // Intentar con columna 'total', fallback a 'precio_total' o 'monto_total'
+    let ordersByDay = [];
+    try {
+      [ordersByDay] = await db.execute(`
+        SELECT DATE(createdAt) AS dia, COUNT(*) AS total,
+          COALESCE(SUM(total), SUM(precio_total), SUM(monto_total), 0) AS monto
+        FROM orders
+        WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+        GROUP BY DATE(createdAt)
+        ORDER BY dia ASC
+      `);
+    } catch {
+      try {
+        [ordersByDay] = await db.execute(`
+          SELECT DATE(createdAt) AS dia, COUNT(*) AS total, 0 AS monto
+          FROM orders
+          WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+          GROUP BY DATE(createdAt)
+          ORDER BY dia ASC
+        `);
+      } catch { ordersByDay = []; }
+    }
 
     // Productos creados por día (últimos 14 días)
     const [productsByDay] = await db.execute(`
@@ -112,18 +130,35 @@ router.get('/activity', authMiddleware, adminOnly, async (req, res) => {
     `);
 
     // Usuarios registrados por día (últimos 14 días)
-    const [usersByDay] = await db.execute(`
-      SELECT DATE(createdAt) AS dia, COUNT(*) AS total
-      FROM users
-      WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 14 DAY)
-      GROUP BY DATE(createdAt)
-      ORDER BY dia ASC
-    `).catch(() => [[]]); // users puede llamarse diferente
+    let usersByDay = [];
+    for (const tbl of ['users','usuarios','clientes','user']) {
+      try {
+        [usersByDay] = await db.execute(`
+          SELECT DATE(createdAt) AS dia, COUNT(*) AS total
+          FROM ${tbl}
+          WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+          GROUP BY DATE(createdAt)
+          ORDER BY dia ASC
+        `);
+        break;
+      } catch { continue; }
+    }
 
     // Conteos totales
-    const [[orders]]   = await db.execute(`SELECT COUNT(*) AS total, SUM(total) AS monto FROM orders`);
+    let ordersRow = { total: 0, monto: 0 };
+    try {
+      const [[o]] = await db.execute(`SELECT COUNT(*) AS total, COALESCE(SUM(total), SUM(precio_total), SUM(monto_total), 0) AS monto FROM orders`);
+      ordersRow = o;
+    } catch {
+      try { const [[o]] = await db.execute(`SELECT COUNT(*) AS total, 0 AS monto FROM orders`); ordersRow = o; } catch {}
+    }
+    const orders = ordersRow;
     const [[products]] = await db.execute(`SELECT COUNT(*) AS total FROM products WHERE activo = 1`);
-    const [[users]]    = await db.execute(`SELECT COUNT(*) AS total FROM users`).catch(() => [[{ total: 0 }]]);
+    let usersRow = { total: 0 };
+    for (const tbl of ['users','usuarios','clientes','user']) {
+      try { const [[u]] = await db.execute(`SELECT COUNT(*) AS total FROM ${tbl}`); usersRow = u; break; } catch {}
+    }
+    const users = usersRow;
     const [[inventory]]= await db.execute(`SELECT COUNT(*) AS total, SUM(stock) AS units FROM inventory`);
 
     res.json({
@@ -133,8 +168,8 @@ router.get('/activity', authMiddleware, adminOnly, async (req, res) => {
         users_by_day:    usersByDay,
       },
       totals: {
-        orders:         orders.total     || 0,
-        orders_revenue: orders.monto     || 0,
+        orders:         ordersRow.total  || 0,
+        orders_revenue: ordersRow.monto  || 0,
         products:       products.total   || 0,
         users:          users.total      || 0,
         inventory_rows: inventory.total  || 0,
