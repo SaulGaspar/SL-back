@@ -251,3 +251,79 @@ router.get('/integrity', authMiddleware, adminOnly, async (req, res) => {
 });
 
 module.exports = router;
+
+// ================================
+// 🔍 GET /api/admin/monitor/schema
+// Vistas, índices y usuarios de la BD
+// ================================
+router.get('/schema', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+
+    // Vistas disponibles
+    const [views] = await db.execute(`
+      SELECT 
+        table_name        AS view_name,
+        view_definition   AS definition
+      FROM information_schema.views
+      WHERE table_schema = DATABASE()
+      ORDER BY table_name
+    `);
+
+    // Índices (excluyendo PKs y los automáticos de information_schema)
+    const [indexes] = await db.execute(`
+      SELECT 
+        s.table_name,
+        s.index_name,
+        s.column_name,
+        s.non_unique,
+        s.cardinality,
+        s.index_type
+      FROM information_schema.statistics s
+      WHERE s.table_schema = DATABASE()
+        AND s.index_name != 'PRIMARY'
+      ORDER BY s.table_name, s.index_name, s.seq_in_index
+    `);
+
+    // Usuarios de la BD (solo los sl_*)
+    let dbUsers = [];
+    try {
+      const [u] = await db.execute(
+        `SELECT user AS username, host FROM mysql.user WHERE user LIKE 'sl_%'`
+      );
+      dbUsers = u;
+    } catch { /* sin permiso a mysql.user — normal en Aiven */ }
+
+    // Conteo de índices por tabla
+    const [idxSummary] = await db.execute(`
+      SELECT table_name, COUNT(DISTINCT index_name) AS total_indexes
+      FROM information_schema.statistics
+      WHERE table_schema = DATABASE() AND index_name != 'PRIMARY'
+      GROUP BY table_name
+      ORDER BY total_indexes DESC
+    `);
+
+    // Tamaño de cada vista (filas aproximadas)
+    const viewStats = [];
+    for (const v of views) {
+      try {
+        const [[stat]] = await db.execute(
+          `SELECT COUNT(*) AS rows FROM \`${v.view_name}\``
+        );
+        viewStats.push({ name: v.view_name, rows: stat.rows });
+      } catch {
+        viewStats.push({ name: v.view_name, rows: null });
+      }
+    }
+
+    res.json({
+      views:      viewStats,
+      indexes,
+      idx_summary: idxSummary,
+      db_users:   dbUsers,
+    });
+  } catch (err) {
+    console.error('Error en monitor schema:', err);
+    res.status(500).json({ error: 'Error obteniendo schema' });
+  }
+});
