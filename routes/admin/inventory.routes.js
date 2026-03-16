@@ -247,11 +247,6 @@ router.post('/transfer', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ============================================================
-// Agregar estas rutas en inventory.routes.js
-// ANTES de module.exports = router;
-// ============================================================
-
 // ================================
 // ➕ POST /api/admin/inventory/batch
 // Inserta múltiples registros en UNA sola conexión MySQL
