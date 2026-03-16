@@ -13,14 +13,15 @@ const passwordRoutes = require('./routes/public/password.routes');
 const profileRoutes  = require('./routes/public/profile.routes');
 const publicProducts = require('./routes/public/products.routes');
 
-// ── Rutas admin 
+// ── Rutas admin
 const adminProducts  = require('./routes/admin/products.routes');
 const adminInventory = require('./routes/admin/inventory.routes');
 const adminBranches  = require('./routes/admin/branches.routes');
 const adminUsers     = require('./routes/admin/users.routes');
 const adminOrders    = require('./routes/admin/orders.routes');
 const adminDashboard = require('./routes/admin/dashboard.routes');
-const backupsRoutes = require('./routes/admin/backups.routes');
+const backupsRoutes  = require('./routes/admin/backups.routes');
+const monitorRoutes  = require('./routes/admin/Monitor.routes');   // ← NUEVO
 
 const app = express();
 app.set('trust proxy', 1);
@@ -81,6 +82,7 @@ app.use('/api/admin/branches',  adminBranches);   // /api/admin/branches
 app.use('/api/admin/users',     adminUsers);      // /api/admin/users
 app.use('/api/admin/orders',    adminOrders);     // /api/admin/orders
 app.use('/api/admin/dashboard', adminDashboard);  // /api/admin/dashboard
-app.use('/api/admin/backups', backupsRoutes);
+app.use('/api/admin/backups',   backupsRoutes);
+app.use('/api/admin/monitor',   monitorRoutes);   // ← NUEVO: /api/admin/monitor/overview|activity|integrity
 
 module.exports = app;
