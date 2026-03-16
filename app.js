@@ -21,8 +21,10 @@ const adminUsers     = require('./routes/admin/users.routes');
 const adminOrders    = require('./routes/admin/orders.routes');
 const adminDashboard = require('./routes/admin/dashboard.routes');
 const backupsRoutes  = require('./routes/admin/backups.routes');
-const monitorRoutes  = require('./routes/admin/Monitor.routes');   // ← NUEVO
+const monitorRoutes  = require('./routes/admin/Monitor.routes');
+const reportsRoutes = require('./routes/admin/Reports.routes');
 
+app.use('/api/admin/reports', reportsRoutes);
 const app = express();
 app.set('trust proxy', 1);
 
