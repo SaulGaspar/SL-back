@@ -3,7 +3,10 @@ const router  = express.Router();
 const { getDB }                     = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 
+// ══════════════════════════════════════════════════
 // 📊 GET /api/admin/reports/summary
+// KPIs generales del período
+// ══════════════════════════════════════════════════
 router.get('/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -13,7 +16,7 @@ router.get('/summary', authMiddleware, adminOnly, async (req, res) => {
     const p = [];
     if (from)             { where += ' AND DATE(o.fecha) >= ?'; p.push(from); }
     if (to)               { where += ' AND DATE(o.fecha) <= ?'; p.push(to); }
-    if (branch && branch !== 'all') { where += ' AND o.sucursal = ?'; p.push(branch); }
+    if (branch && branch !== 'all') { where += ' AND o.sucursal = (SELECT id FROM branches WHERE nombre = ? LIMIT 1)'; p.push(branch); }
 
     // Totales del período
     const [[cur]] = await db.execute(`
@@ -28,6 +31,7 @@ router.get('/summary', authMiddleware, adminOnly, async (req, res) => {
       FROM orders o ${where}
     `, p);
 
+    // Período anterior (misma duración) para comparativas
     let prev = { ingresos: 0, total_pedidos: 0, clientes_unicos: 0 };
     if (from && to) {
       const days = Math.ceil((new Date(to) - new Date(from)) / 86400000);
@@ -51,7 +55,10 @@ router.get('/summary', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════
 // 📈 GET /api/admin/reports/timeline
+// Ventas día a día en el período
+// ══════════════════════════════════════════════════
 router.get('/timeline', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -61,7 +68,7 @@ router.get('/timeline', authMiddleware, adminOnly, async (req, res) => {
     const p = [];
     if (from)                        { where += ' AND DATE(o.fecha) >= ?'; p.push(from); }
     if (to)                          { where += ' AND DATE(o.fecha) <= ?'; p.push(to); }
-    if (branch && branch !== 'all')  { where += ' AND o.sucursal = ?'; p.push(branch); }
+    if (branch && branch !== 'all')  { where += ' AND o.sucursal = (SELECT id FROM branches WHERE nombre = ? LIMIT 1)'; p.push(branch); }
 
     const [rows] = await db.execute(`
       SELECT
@@ -81,7 +88,10 @@ router.get('/timeline', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════
 // 🏪 GET /api/admin/reports/by-branch
+// Desglose por sucursal
+// ══════════════════════════════════════════════════
 router.get('/by-branch', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -94,14 +104,16 @@ router.get('/by-branch', authMiddleware, adminOnly, async (req, res) => {
 
     const [rows] = await db.execute(`
       SELECT
-        COALESCE(o.sucursal, 'Sin asignar')   AS sucursal,
-        COUNT(o.id)                            AS pedidos,
-        COALESCE(SUM(o.total), 0)             AS ingresos,
-        COALESCE(AVG(o.total), 0)             AS ticket_promedio,
-        COUNT(DISTINCT o.user_id)              AS clientes_unicos,
+        COALESCE(b.nombre, 'Sin asignar')      AS sucursal,
+        COUNT(o.id)                             AS pedidos,
+        COALESCE(SUM(o.total), 0)              AS ingresos,
+        COALESCE(AVG(o.total), 0)              AS ticket_promedio,
+        COUNT(DISTINCT o.user_id)               AS clientes_unicos,
         SUM(CASE WHEN o.status='cancelado' THEN 1 ELSE 0 END) AS cancelados
-      FROM orders o ${where}
-      GROUP BY o.sucursal
+      FROM orders o
+      LEFT JOIN branches b ON b.id = o.sucursal
+      ${where}
+      GROUP BY o.sucursal, b.nombre
       ORDER BY ingresos DESC
     `, p);
 
@@ -112,7 +124,10 @@ router.get('/by-branch', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════
 // 🛍️ GET /api/admin/reports/top-products
+// Productos más vendidos
+// ══════════════════════════════════════════════════
 router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -122,19 +137,19 @@ router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
     const p = [];
     if (from)                        { where += ' AND DATE(o.fecha) >= ?'; p.push(from); }
     if (to)                          { where += ' AND DATE(o.fecha) <= ?'; p.push(to); }
-    if (branch && branch !== 'all')  { where += ' AND o.sucursal = ?'; p.push(branch); }
+    if (branch && branch !== 'all')  { where += ' AND o.sucursal = (SELECT id FROM branches WHERE nombre = ? LIMIT 1)'; p.push(branch); }
 
     const [rows] = await db.execute(`
       SELECT
         p.id, p.nombre, p.marca, p.categoria, p.precio, p.imagen,
-        SUM(oi.cantidad)                  AS vendidos,
-        SUM(oi.cantidad * oi.precio)      AS ingresos,
-        COUNT(DISTINCT o.id)              AS num_pedidos
+        SUM(oi.cantidad)     AS vendidos,
+        SUM(oi.subtotal)     AS ingresos,
+        COUNT(DISTINCT o.id) AS num_pedidos
       FROM order_items oi
-      JOIN orders  o ON o.id  = oi.order_id
-      JOIN products p ON p.id = oi.product_id
+      JOIN orders   o ON o.id  = oi.order_id
+      JOIN products p ON p.id  = oi.product_id
       ${where}
-      GROUP BY p.id
+      GROUP BY p.id, p.nombre, p.marca, p.categoria, p.precio, p.imagen
       ORDER BY vendidos DESC
       LIMIT ?
     `, [...p, Number(limit)]);
@@ -146,7 +161,10 @@ router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════
 // 🗂️ GET /api/admin/reports/by-category
+// Ventas por categoría
+// ══════════════════════════════════════════════════
 router.get('/by-category', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -156,17 +174,17 @@ router.get('/by-category', authMiddleware, adminOnly, async (req, res) => {
     const p = [];
     if (from)                        { where += ' AND DATE(o.fecha) >= ?'; p.push(from); }
     if (to)                          { where += ' AND DATE(o.fecha) <= ?'; p.push(to); }
-    if (branch && branch !== 'all')  { where += ' AND o.sucursal = ?'; p.push(branch); }
+    if (branch && branch !== 'all')  { where += ' AND o.sucursal = (SELECT id FROM branches WHERE nombre = ? LIMIT 1)'; p.push(branch); }
 
     const [rows] = await db.execute(`
       SELECT
         COALESCE(p.categoria, 'Sin categoría') AS categoria,
-        SUM(oi.cantidad)                         AS vendidos,
-        SUM(oi.cantidad * oi.precio)             AS ingresos,
-        COUNT(DISTINCT p.id)                     AS productos_distintos
+        SUM(oi.cantidad)                        AS vendidos,
+        SUM(oi.subtotal)                        AS ingresos,
+        COUNT(DISTINCT p.id)                    AS productos_distintos
       FROM order_items oi
       JOIN orders   o ON o.id  = oi.order_id
-      JOIN products p ON p.id = oi.product_id
+      JOIN products p ON p.id  = oi.product_id
       ${where}
       GROUP BY p.categoria
       ORDER BY ingresos DESC
@@ -179,12 +197,16 @@ router.get('/by-category', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════
 // 🏪 GET /api/admin/reports/branch-detail/:id
+// Detalle completo de una sucursal
+// ══════════════════════════════════════════════════
 router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
     const { id } = req.params;
 
+    // Info base + inventario
     const [[branch]] = await db.execute(`
       SELECT b.*,
         COUNT(DISTINCT i.product_id)  AS productos,
@@ -201,27 +223,32 @@ router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => 
 
     if (!branch) return res.status(404).json({ error: 'Sucursal no encontrada' });
 
+    // Ventas últimos 30 días
     const [[sales]] = await db.execute(`
       SELECT
-        COUNT(o.id)           AS pedidos_mes,
+        COUNT(o.id)               AS pedidos_mes,
         COALESCE(SUM(o.total), 0) AS ingresos_mes,
         COALESCE(AVG(o.total), 0) AS ticket_promedio,
         COUNT(DISTINCT o.user_id) AS clientes_unicos
       FROM orders o
       WHERE o.sucursal = ? AND DATE(o.fecha) >= DATE_SUB(NOW(), INTERVAL 30 DAY)
         AND o.status != 'cancelado'
-    `, [branch.nombre]).catch(() => [[{ pedidos_mes:0, ingresos_mes:0, ticket_promedio:0, clientes_unicos:0 }]]);
+    `, [id]).catch(() => [[{ pedidos_mes:0, ingresos_mes:0, ticket_promedio:0, clientes_unicos:0 }]]);
 
+    // Top 5 productos más vendidos en esta sucursal
     const [topProds] = await db.execute(`
-      SELECT p.nombre, p.categoria, SUM(oi.cantidad) AS vendidos
+      SELECT p.nombre, p.categoria,
+        SUM(oi.cantidad) AS vendidos,
+        SUM(oi.subtotal) AS ingresos
       FROM order_items oi
-      JOIN orders  o ON o.id = oi.order_id
-      JOIN products p ON p.id = oi.product_id
+      JOIN orders   o ON o.id  = oi.order_id
+      JOIN products p ON p.id  = oi.product_id
       WHERE o.sucursal = ? AND o.status != 'cancelado'
         AND DATE(o.fecha) >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      GROUP BY p.id ORDER BY vendidos DESC LIMIT 5
-    `, [branch.nombre]).catch(() => [[]]);
+      GROUP BY p.id, p.nombre, p.categoria ORDER BY vendidos DESC LIMIT 5
+    `, [id]).catch(() => [[]]);
 
+    // Productos con bajo stock
     const [lowStock] = await db.execute(`
       SELECT p.nombre, p.categoria, i.stock, i.min_stock
       FROM inventory i
@@ -237,4 +264,7 @@ router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => 
   }
 });
 
+// ══════════════════════════════════════════════════
+// ⚠️  module.exports AL FINAL
+// ══════════════════════════════════════════════════
 module.exports = router;
