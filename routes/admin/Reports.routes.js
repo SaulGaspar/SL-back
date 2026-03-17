@@ -12,11 +12,12 @@ router.get('/summary', authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
     const { from, to, branch } = req.query;
 
-    let where = 'WHERE 1=1';
+    const whereArr = [];
     const p = [];
-    if (from)             { where += ' AND DATE(o.fecha) >= ?'; p.push(from); }
-    if (to)               { where += ' AND DATE(o.fecha) <= ?'; p.push(to); }
-    if (branch && branch !== 'all') { where += ' AND o.sucursal = (SELECT id FROM branches WHERE nombre = ? LIMIT 1)'; p.push(branch); }
+    if (from)                        { whereArr.push('DATE(o.fecha) >= ?'); p.push(from); }
+    if (to)                          { whereArr.push('DATE(o.fecha) <= ?'); p.push(to); }
+    if (branch && branch !== 'all')  { whereArr.push('o.sucursal = ?');     p.push(branch); }
+    const where = whereArr.length ? 'WHERE ' + whereArr.join(' AND ') : 'WHERE 1=1';
 
     // Totales del período
     const [[cur]] = await db.execute(`
@@ -64,11 +65,12 @@ router.get('/timeline', authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
     const { from, to, branch } = req.query;
 
-    let where = "WHERE o.status != 'cancelado'";
+    const whereArr = [];
     const p = [];
-    if (from)                        { where += ' AND DATE(o.fecha) >= ?'; p.push(from); }
-    if (to)                          { where += ' AND DATE(o.fecha) <= ?'; p.push(to); }
-    if (branch && branch !== 'all')  { where += ' AND o.sucursal = (SELECT id FROM branches WHERE nombre = ? LIMIT 1)'; p.push(branch); }
+    if (from)                        { whereArr.push('o.fecha >= ?');   p.push(from); }
+    if (to)                          { whereArr.push('o.fecha <= ?');   p.push(to); }
+    if (branch && branch !== 'all')  { whereArr.push('o.sucursal = ?'); p.push(branch); }
+    const where = whereArr.length ? 'WHERE ' + whereArr.join(' AND ') : '';
 
     const [rows] = await db.execute(`
       SELECT
@@ -133,26 +135,27 @@ router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
     const { from, to, branch, limit = 10 } = req.query;
 
-    let where = "WHERE o.status != 'cancelado'";
-    const p = [];
-    if (from)                        { where += ' AND DATE(o.fecha) >= ?'; p.push(from); }
-    if (to)                          { where += ' AND DATE(o.fecha) <= ?'; p.push(to); }
-    if (branch && branch !== 'all')  { where += ' AND o.sucursal = (SELECT id FROM branches WHERE nombre = ? LIMIT 1)'; p.push(branch); }
+    // Mismo patrón que dashboard.routes.js — construir WHERE dinámico
+    const where  = [];
+    const params = [];
+    if (from)                        { where.push('o.fecha >= ?');    params.push(from); }
+    if (to)                          { where.push('o.fecha <= ?');    params.push(to); }
+    if (branch && branch !== 'all')  { where.push('o.sucursal = ?'); params.push(branch); }
+    const whereSQL = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
     const [rows] = await db.execute(`
-      SELECT
-        p.id, p.nombre, p.marca, p.categoria, p.precio, p.imagen,
-        SUM(oi.cantidad)     AS vendidos,
-        SUM(oi.subtotal)     AS ingresos,
-        COUNT(DISTINCT o.id) AS num_pedidos
+      SELECT p.nombre, p.marca, p.categoria, p.precio,
+             SUM(oi.cantidad)        AS vendidos,
+             SUM(oi.subtotal)        AS ingresos,
+             COUNT(DISTINCT o.id)    AS num_pedidos
       FROM order_items oi
-      JOIN orders   o ON o.id  = oi.order_id
-      JOIN products p ON p.id  = oi.product_id
-      ${where}
-      GROUP BY p.id, p.nombre, p.marca, p.categoria, p.precio, p.imagen
+      JOIN products p ON p.id = oi.product_id
+      JOIN orders   o ON o.id = oi.order_id
+      ${whereSQL}
+      GROUP BY p.nombre, p.marca, p.categoria, p.precio
       ORDER BY vendidos DESC
       LIMIT ?
-    `, [...p, Number(limit)]);
+    `, [...params, Number(limit)]);
 
     res.json(rows);
   } catch (err) {
@@ -170,11 +173,12 @@ router.get('/by-category', authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
     const { from, to, branch } = req.query;
 
-    let where = "WHERE o.status != 'cancelado'";
+    const whereArr = [];
     const p = [];
-    if (from)                        { where += ' AND DATE(o.fecha) >= ?'; p.push(from); }
-    if (to)                          { where += ' AND DATE(o.fecha) <= ?'; p.push(to); }
-    if (branch && branch !== 'all')  { where += ' AND o.sucursal = (SELECT id FROM branches WHERE nombre = ? LIMIT 1)'; p.push(branch); }
+    if (from)                        { whereArr.push('o.fecha >= ?');   p.push(from); }
+    if (to)                          { whereArr.push('o.fecha <= ?');   p.push(to); }
+    if (branch && branch !== 'all')  { whereArr.push('o.sucursal = ?'); p.push(branch); }
+    const where = whereArr.length ? 'WHERE ' + whereArr.join(' AND ') : '';
 
     const [rows] = await db.execute(`
       SELECT
@@ -264,7 +268,4 @@ router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => 
   }
 });
 
-// ══════════════════════════════════════════════════
-// ⚠️  module.exports AL FINAL
-// ══════════════════════════════════════════════════
 module.exports = router;
