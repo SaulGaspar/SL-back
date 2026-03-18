@@ -44,6 +44,37 @@ router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
 
 
 // ================================
+// 🔔 GET /api/orders/notificaciones
+// Actualizaciones de pedidos del usuario logueado
+// PEGA EN orders.routes.js ANTES del GET /:id
+// ================================
+router.get('/notificaciones', authMiddleware, async (req, res) => {
+  try {
+    const db    = await getDB();
+    const since = req.query.since || new Date(Date.now() - 7 * 86400000).toISOString();
+
+    // Pedidos del usuario que cambiaron de status recientemente
+    const [pedidos] = await db.execute(`
+      SELECT o.id, o.total, o.status, o.fecha, o.sucursal,
+             b.nombre AS sucursal_nombre,
+             COALESCE(o.pedido_ref, CAST(o.id AS CHAR)) AS pedido_ref
+      FROM orders o
+      LEFT JOIN branches b ON b.id = o.sucursal
+      WHERE o.user_id = ?
+        AND o.fecha >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      ORDER BY o.fecha DESC
+      LIMIT 20
+    `, [req.user.id]);
+
+    res.json({ pedidos, total: pedidos.length });
+  } catch (err) {
+    console.error('Error notificaciones cliente:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ================================
 // 🔔 GET /nuevos — pedidos recientes para notificaciones admin
 // ================================
 router.get('/nuevos', authMiddleware, adminOnly, async (req, res) => {
