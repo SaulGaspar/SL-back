@@ -206,25 +206,33 @@ router.post('/', authMiddleware, async (req, res) => {
     }
 
     const grupos = Object.values(porSucursal);
-    await db.execute('START TRANSACTION');
+
+    // Obtener conexión individual para la transacción
+    // db.execute() no soporta START TRANSACTION en mysql2 con pool
+    const conn = await db.getConnection();
     const orderIds = [];
 
     try {
+      await conn.beginTransaction();
+
       for (const grupo of grupos) {
-        const [result] = await db.execute(`
+        const [result] = await conn.execute(`
           INSERT INTO orders (user_id, sucursal, total, status, fecha)
           VALUES (?, ?, ?, 'pendiente', NOW())
         `, [req.user.id, grupo.branch_id, grupo.subtotal]);
         const orderId = result.insertId;
         orderIds.push({ orderId, sucursal: grupo.branch_nombre });
         for (const item of grupo.items) {
-          await db.execute(
+          await conn.execute(
             `INSERT INTO order_items (order_id, product_id, cantidad, subtotal) VALUES (?, ?, ?, ?)`,
             [orderId, item.product_id, item.cantidad, item.subtotal]
           );
         }
       }
-      await db.execute('COMMIT');
+
+      await conn.commit();
+      conn.release();
+
       const sucursales = [...new Set(grupos.map(g => g.branch_nombre))];
       console.log(`✅ ${orderIds.length} pedido(s) | usuario ${req.user.id} | $${total} | ${sucursales.join(', ')}`);
       res.json({
@@ -235,7 +243,8 @@ router.post('/', authMiddleware, async (req, res) => {
         sucursal: sucursales.length === 1 ? sucursales[0] : `${sucursales.length} sucursales`,
       });
     } catch (err) {
-      await db.execute('ROLLBACK');
+      await conn.rollback();
+      conn.release();
       throw err;
     }
   } catch (err) {
