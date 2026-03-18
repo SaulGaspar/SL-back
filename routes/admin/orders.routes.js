@@ -44,9 +44,7 @@ router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
 // 📋 GET /api/admin/orders
-// ================================
 
 router.get('/', authMiddleware, adminOnly, async (req, res) => {
   const { status, sucursal, from, to, user_id, limit } = req.query;
@@ -83,9 +81,7 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
 // 📄 GET /api/admin/orders/:id
-// ================================
 
 router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -117,9 +113,7 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================================
 // 🔄 PATCH /api/admin/orders/:id/status
-// ================================
 
 router.patch('/:id/status', authMiddleware, adminOnly, async (req, res) => {
   const { status } = req.body;
@@ -140,6 +134,128 @@ router.patch('/:id/status', authMiddleware, adminOnly, async (req, res) => {
   } catch (err) {
     console.error('Error actualizando status de orden:', err.message);
     res.status(500).json({ error: 'Error actualizando status', detalle: err.message });
+  }
+});
+
+// ➕ POST /api/orders
+
+router.post('/', authMiddleware, async (req, res) => {
+  const { total, items } = req.body;
+
+  if (!items || !Array.isArray(items) || items.length === 0)
+    return res.status(400).json({ error: 'El pedido no tiene productos' });
+  if (!total || total <= 0)
+    return res.status(400).json({ error: 'Total inválido' });
+
+  try {
+    const db = await getDB();
+
+    // ── 1. Por cada producto, encontrar la sucursal con más stock ────
+    const itemsConSucursal = [];
+
+    for (const item of items) {
+      const { product_id, cantidad, subtotal } = item;
+
+      // Buscar sucursal activa con más stock de este producto
+      const [rows] = await db.execute(`
+        SELECT i.branch_id, b.nombre, i.stock
+        FROM inventory i
+        JOIN branches b ON b.id = i.branch_id
+        WHERE i.product_id = ? AND b.activo = 1 AND i.stock >= ?
+        ORDER BY i.stock DESC
+        LIMIT 1
+      `, [product_id, cantidad]);
+
+      if (rows.length === 0) {
+        // Sin stock en ninguna sucursal — buscar la que tenga algo aunque sea parcial
+        const [fallback] = await db.execute(`
+          SELECT i.branch_id, b.nombre, i.stock
+          FROM inventory i
+          JOIN branches b ON b.id = i.branch_id
+          WHERE i.product_id = ? AND b.activo = 1 AND i.stock > 0
+          ORDER BY i.stock DESC
+          LIMIT 1
+        `, [product_id]);
+
+        // Si no hay stock en ningún lado, asignar sucursal 1 como fallback
+        const sucursal = fallback[0] || { branch_id: 1, nombre: 'Principal' };
+        itemsConSucursal.push({ ...item, branch_id: sucursal.branch_id, branch_nombre: sucursal.nombre });
+      } else {
+        itemsConSucursal.push({ ...item, branch_id: rows[0].branch_id, branch_nombre: rows[0].nombre });
+      }
+    }
+
+    // ── 2. Agrupar items por sucursal ─
+    const porSucursal = {};
+    for (const item of itemsConSucursal) {
+      const key = item.branch_id;
+      if (!porSucursal[key]) {
+        porSucursal[key] = {
+          branch_id:    item.branch_id,
+          branch_nombre: item.branch_nombre,
+          items:         [],
+          subtotal:      0,
+        };
+      }
+      porSucursal[key].items.push(item);
+      porSucursal[key].subtotal += Number(item.subtotal);
+    }
+
+    const grupos = Object.values(porSucursal);
+
+    // ── 3. Crear un pedido por sucursal, en transacción ──
+    await db.execute('START TRANSACTION');
+
+    const orderIds = [];
+
+    try {
+      for (const grupo of grupos) {
+        // Prorratear el total según el subtotal del grupo vs total global
+        // (así la suma de los pedidos == total del carrito)
+        const totalGrupo = grupo.subtotal;
+
+        const [result] = await db.execute(`
+          INSERT INTO orders (user_id, sucursal, total, status, fecha)
+          VALUES (?, ?, ?, 'pendiente', NOW())
+        `, [req.user.id, grupo.branch_id, totalGrupo]);
+
+        const orderId = result.insertId;
+        orderIds.push({ orderId, sucursal: grupo.branch_nombre });
+
+        for (const item of grupo.items) {
+          await db.execute(`
+            INSERT INTO order_items (order_id, product_id, cantidad, subtotal)
+            VALUES (?, ?, ?, ?)
+          `, [orderId, item.product_id, item.cantidad, item.subtotal]);
+        }
+      }
+
+      await db.execute('COMMIT');
+
+      const sucursales = [...new Set(grupos.map(g => g.branch_nombre))];
+      console.log(
+        `✅ ${orderIds.length} pedido(s) creados | usuario ${req.user.id} | $${total}` +
+        ` | sucursales: ${sucursales.join(', ')}`
+      );
+
+      res.json({
+        message:   'Pedido creado correctamente',
+        // Devolver el primer orderId como referencia principal para el cliente
+        orderId:   orderIds[0].orderId,
+        orderIds,
+        sucursales,
+        // Si fue a una sola sucursal mostrar su nombre, si fueron varias "varias sucursales"
+        sucursal:  sucursales.length === 1 ? sucursales[0] : `${sucursales.length} sucursales`,
+      });
+
+    } catch (err) {
+      await db.execute('ROLLBACK');
+      throw err;
+    }
+
+  } catch (err) {
+    console.error('Error creando pedido:', err);
+    res.status(500).json({ error: 'Error al procesar el pedido', detalle: err.message });
   }
 });
 
