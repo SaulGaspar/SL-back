@@ -19,7 +19,6 @@ router.get('/summary', authMiddleware, adminOnly, async (req, res) => {
     if (branch && branch !== 'all')  { whereArr.push('o.sucursal = ?');     p.push(branch); }
     const where = whereArr.length ? 'WHERE ' + whereArr.join(' AND ') : 'WHERE 1=1';
 
-    // Totales del período
     const [[cur]] = await db.execute(`
       SELECT
         COUNT(o.id)                                                        AS total_pedidos,
@@ -32,7 +31,6 @@ router.get('/summary', authMiddleware, adminOnly, async (req, res) => {
       FROM orders o ${where}
     `, p);
 
-    // Período anterior (misma duración) para comparativas
     let prev = { ingresos: 0, total_pedidos: 0, clientes_unicos: 0 };
     if (from && to) {
       const days = Math.ceil((new Date(to) - new Date(from)) / 86400000);
@@ -135,13 +133,15 @@ router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
     const { from, to, branch, limit = 10 } = req.query;
 
-    // Mismo patrón que dashboard.routes.js — construir WHERE dinámico
     const where  = [];
     const params = [];
     if (from)                        { where.push('o.fecha >= ?');    params.push(from); }
     if (to)                          { where.push('o.fecha <= ?');    params.push(to); }
     if (branch && branch !== 'all')  { where.push('o.sucursal = ?'); params.push(branch); }
     const whereSQL = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+    // LIMIT interpolado directamente — mysql2 no acepta LIMIT como parámetro ?
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
 
     const [rows] = await db.execute(`
       SELECT p.nombre, p.marca, p.categoria, p.precio,
@@ -154,8 +154,8 @@ router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
       ${whereSQL}
       GROUP BY p.nombre, p.marca, p.categoria, p.precio
       ORDER BY vendidos DESC
-      LIMIT ?
-    `, [...params, Number(limit)]);
+      LIMIT ${limitNum}
+    `, params);
 
     res.json(rows);
   } catch (err) {
@@ -210,7 +210,6 @@ router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => 
     const db = await getDB();
     const { id } = req.params;
 
-    // Info base + inventario
     const [[branch]] = await db.execute(`
       SELECT b.*,
         COUNT(DISTINCT i.product_id)  AS productos,
@@ -227,7 +226,6 @@ router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => 
 
     if (!branch) return res.status(404).json({ error: 'Sucursal no encontrada' });
 
-    // Ventas últimos 30 días
     const [[sales]] = await db.execute(`
       SELECT
         COUNT(o.id)               AS pedidos_mes,
@@ -239,7 +237,6 @@ router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => 
         AND o.status != 'cancelado'
     `, [id]).catch(() => [[{ pedidos_mes:0, ingresos_mes:0, ticket_promedio:0, clientes_unicos:0 }]]);
 
-    // Top 5 productos más vendidos en esta sucursal
     const [topProds] = await db.execute(`
       SELECT p.nombre, p.categoria,
         SUM(oi.cantidad) AS vendidos,
@@ -252,7 +249,6 @@ router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => 
       GROUP BY p.id, p.nombre, p.categoria ORDER BY vendidos DESC LIMIT 5
     `, [id]).catch(() => [[]]);
 
-    // Productos con bajo stock
     const [lowStock] = await db.execute(`
       SELECT p.nombre, p.categoria, i.stock, i.min_stock
       FROM inventory i

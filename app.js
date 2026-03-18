@@ -82,7 +82,6 @@ app.use('/api/admin/backups',   backupsRoutes);
 app.use('/api/admin/monitor',   monitorRoutes);
 app.use('/api/admin/reports',   reportsRoutes);
 
-// Ruta pública para crear pedidos (cliente logueado, no admin)
 app.use('/api/orders', adminOrders);
 
 module.exports = app;
