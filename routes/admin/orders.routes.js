@@ -5,7 +5,7 @@ const { getDB } = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { sanitizeLog } = require('../../helpers/sanitizeLog');
 
-const STATUS_VALIDOS = ['pendiente', 'procesando', 'enviado', 'entregado', 'cancelado'];
+const STATUS_VALIDOS = ['pendiente', 'preparando', 'en_camino', 'entregado', 'cancelado'];
 
 // ================================
 // 📊 GET /stats/summary
@@ -39,6 +39,37 @@ router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   } catch (err) {
     console.error('Error obteniendo estadísticas:', err.message);
     res.status(500).json({ error: 'Error obteniendo estadísticas', detalle: err.message });
+  }
+});
+
+
+// ================================
+// 🔔 GET /nuevos — pedidos recientes para notificaciones admin
+// ================================
+router.get('/nuevos', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db    = await getDB();
+    const since = req.query.since || new Date(Date.now() - 60000).toISOString();
+
+    const [pedidos] = await db.execute(`
+      SELECT o.id, o.total, o.status, o.fecha, o.sucursal,
+             b.nombre AS sucursal_nombre,
+             u.nombre AS cliente_nombre,
+             u.apellidoP AS cliente_apellido,
+             COUNT(oi.id) AS num_items
+      FROM orders o
+      LEFT JOIN branches b ON b.id = o.sucursal
+      LEFT JOIN users u ON u.id = o.user_id
+      LEFT JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.fecha > ?
+      GROUP BY o.id
+      ORDER BY o.fecha DESC
+    `, [since]);
+
+    res.json({ pedidos, total: pedidos.length });
+  } catch (err) {
+    console.error('Error notificaciones:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -139,6 +170,7 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
     res.status(500).json({ error: 'Error obteniendo órdenes', detalle: err.message });
   }
 });
+
 
 // ================================
 // 📄 GET /:id  (admin)
@@ -283,35 +315,6 @@ router.post('/', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('Error creando pedido:', err);
     res.status(500).json({ error: 'Error al procesar el pedido', detalle: err.message });
-  }
-});
-
-// 🔔 GET /api/orders/nuevos
-// Pedidos creados después de ?since=ISO_DATE
-// Solo admin — para el sistema de notificaciones del panel
-router.get('/nuevos', authMiddleware, adminOnly, async (req, res) => {
-  try {
-    const db    = await getDB();
-    const since = req.query.since || new Date(Date.now() - 60000).toISOString();
-
-    const [pedidos] = await db.execute(`
-      SELECT o.id, o.total, o.status, o.fecha, o.sucursal,
-             b.nombre AS sucursal_nombre,
-             u.nombre AS cliente_nombre, u.apellidoP AS cliente_apellido,
-             COUNT(oi.id) AS num_items
-      FROM orders o
-      LEFT JOIN branches b ON b.id = o.sucursal
-      LEFT JOIN users    u ON u.id = o.user_id
-      LEFT JOIN order_items oi ON oi.order_id = o.id
-      WHERE o.fecha > ?
-      GROUP BY o.id
-      ORDER BY o.fecha DESC
-    `, [since]);
-
-    res.json({ pedidos, total: pedidos.length });
-  } catch (err) {
-    console.error('Error obteniendo pedidos nuevos:', err.message);
-    res.status(500).json({ error: err.message });
   }
 });
 
