@@ -50,7 +50,6 @@ router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
 
 // ================================
 // 🔍 GET /api/admin/products/search
-// Usa v_productos_stock — ya tiene stock_total y sucursales_con_stock
 // ================================
 
 router.get('/search', authMiddleware, adminOnly, async (req, res) => {
@@ -59,8 +58,6 @@ router.get('/search', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // La vista v_productos_stock ya calcula stock_total, sucursales_con_stock,
-    // stock_minimo_sucursal y sucursales_bajo_stock sin necesitar el LEFT JOIN
     let sql    = 'SELECT * FROM v_productos_stock WHERE 1=1';
     const params = [];
 
@@ -122,20 +119,15 @@ router.get('/marcas', authMiddleware, adminOnly, async (req, res) => {
 
 // ================================
 // 📦 GET /api/admin/products
-// Usa v_productos_stock — evita el GROUP BY + JOIN manual
 // ================================
 
 router.get('/', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
-
-    // La vista ya tiene: stock_total, sucursales_con_stock,
-    // stock_minimo_sucursal, sucursales_bajo_stock, createdAt, updatedAt
     const [rows] = await db.execute(`
       SELECT * FROM v_productos_stock
       ORDER BY id DESC
     `);
-
     res.json(rows);
   } catch (err) {
     console.error('Error obteniendo productos:', err);
@@ -151,7 +143,6 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // Producto con stock_total desde la vista
     const [rows] = await db.execute(
       'SELECT * FROM v_productos_stock WHERE id = ?',
       [req.params.id]
@@ -159,7 +150,6 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
     if (rows.length === 0)
       return res.status(404).json({ error: 'Producto no encontrado' });
 
-    // Inventario detallado por sucursal desde v_inventario_completo
     const [inventory] = await db.execute(`
       SELECT id, stock, min_stock, branch_id, sucursal, estado, valor_stock
       FROM v_inventario_completo
@@ -167,10 +157,164 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
       ORDER BY sucursal
     `, [req.params.id]);
 
-    res.json({ product: rows[0], inventory });
+    // Imágenes adicionales
+    const [images] = await db.execute(`
+      SELECT id, url, orden FROM product_images
+      WHERE product_id = ? ORDER BY orden ASC
+    `, [req.params.id]);
+
+    res.json({ product: rows[0], inventory, images });
   } catch (err) {
     console.error('Error obteniendo producto:', err);
     res.status(500).json({ error: 'Error obteniendo producto' });
+  }
+});
+
+// ================================
+// 🖼️ GET /api/admin/products/:id/images
+// Obtener todas las imágenes de un producto
+// ================================
+
+router.get('/:id/images', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+    const [images] = await db.execute(`
+      SELECT id, url, orden, created_at
+      FROM product_images
+      WHERE product_id = ?
+      ORDER BY orden ASC
+    `, [req.params.id]);
+    res.json(images);
+  } catch (err) {
+    console.error('Error obteniendo imágenes:', err);
+    res.status(500).json({ error: 'Error obteniendo imágenes' });
+  }
+});
+
+// ================================
+// 🖼️ POST /api/admin/products/:id/images
+// Agregar imagen a un producto
+// ================================
+
+router.post('/:id/images', authMiddleware, adminOnly, async (req, res) => {
+  const { url, orden } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL de imagen requerida' });
+
+  try {
+    const db = await getDB();
+
+    // Verificar que el producto existe
+    const [exists] = await db.execute('SELECT id FROM products WHERE id = ?', [req.params.id]);
+    if (exists.length === 0)
+      return res.status(404).json({ error: 'Producto no encontrado' });
+
+    // Si no viene orden, poner al final
+    let ordenFinal = orden;
+    if (ordenFinal === undefined) {
+      const [[{ maxOrden }]] = await db.execute(
+        'SELECT COALESCE(MAX(orden), -1) AS maxOrden FROM product_images WHERE product_id = ?',
+        [req.params.id]
+      );
+      ordenFinal = maxOrden + 1;
+    }
+
+    const [result] = await db.execute(
+      'INSERT INTO product_images (product_id, url, orden) VALUES (?, ?, ?)',
+      [req.params.id, url, ordenFinal]
+    );
+
+    // Si es la primera imagen (orden 0), actualizar también el campo imagen principal
+    if (ordenFinal === 0) {
+      await db.execute(
+        'UPDATE products SET imagen = ?, updatedAt = NOW() WHERE id = ?',
+        [url, req.params.id]
+      );
+    }
+
+    console.log(`✅ Imagen agregada al producto ID ${sanitizeLog(req.params.id)} por ${sanitizeLog(req.user.usuario)}`);
+    res.json({ message: 'Imagen agregada correctamente', id: result.insertId, url, orden: ordenFinal });
+  } catch (err) {
+    console.error('Error agregando imagen:', err);
+    res.status(500).json({ error: 'Error agregando imagen' });
+  }
+});
+
+// ================================
+// 🖼️ DELETE /api/admin/products/images/:imageId
+// Eliminar una imagen
+// ================================
+
+router.delete('/images/:imageId', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+
+    const [exists] = await db.execute(
+      'SELECT id, product_id, orden FROM product_images WHERE id = ?',
+      [req.params.imageId]
+    );
+    if (exists.length === 0)
+      return res.status(404).json({ error: 'Imagen no encontrada' });
+
+    const { product_id, orden } = exists[0];
+    await db.execute('DELETE FROM product_images WHERE id = ?', [req.params.imageId]);
+
+    // Si era la imagen principal (orden 0), actualizar products.imagen con la siguiente
+    if (orden === 0) {
+      const [[next]] = await db.execute(
+        'SELECT url FROM product_images WHERE product_id = ? ORDER BY orden ASC LIMIT 1',
+        [product_id]
+      );
+      await db.execute(
+        'UPDATE products SET imagen = ?, updatedAt = NOW() WHERE id = ?',
+        [next?.url || null, product_id]
+      );
+    }
+
+    console.log(`🗑️ Imagen ${sanitizeLog(req.params.imageId)} eliminada por ${sanitizeLog(req.user.usuario)}`);
+    res.json({ message: 'Imagen eliminada correctamente' });
+  } catch (err) {
+    console.error('Error eliminando imagen:', err);
+    res.status(500).json({ error: 'Error eliminando imagen' });
+  }
+});
+
+// ================================
+// 🖼️ PATCH /api/admin/products/images/reorder
+// Reordenar imágenes de un producto
+// Body: { product_id, images: [{ id, orden }] }
+// ================================
+
+router.patch('/images/reorder', authMiddleware, adminOnly, async (req, res) => {
+  const { product_id, images } = req.body;
+  if (!product_id || !Array.isArray(images))
+    return res.status(400).json({ error: 'product_id e images[] requeridos' });
+
+  try {
+    const db = await getDB();
+
+    for (const img of images) {
+      await db.execute(
+        'UPDATE product_images SET orden = ? WHERE id = ? AND product_id = ?',
+        [img.orden, img.id, product_id]
+      );
+    }
+
+    // Actualizar imagen principal con la de orden 0
+    const [[first]] = await db.execute(
+      'SELECT url FROM product_images WHERE product_id = ? ORDER BY orden ASC LIMIT 1',
+      [product_id]
+    );
+    if (first) {
+      await db.execute(
+        'UPDATE products SET imagen = ?, updatedAt = NOW() WHERE id = ?',
+        [first.url, product_id]
+      );
+    }
+
+    res.json({ message: 'Imágenes reordenadas correctamente' });
+  } catch (err) {
+    console.error('Error reordenando imágenes:', err);
+    res.status(500).json({ error: 'Error reordenando imágenes' });
   }
 });
 
@@ -202,6 +346,14 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
     `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe]);
 
     const productId = result.insertId;
+
+    // Si viene imagen, registrarla también en product_images como orden 0
+    if (imagen) {
+      await db.execute(
+        'INSERT INTO product_images (product_id, url, orden) VALUES (?, ?, 0)',
+        [productId, imagen]
+      );
+    }
 
     if (inventario && Array.isArray(inventario)) {
       for (const inv of inventario) {
@@ -254,6 +406,25 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
           imagen=?, talla=?, colores=?, activo=?, updatedAt=NOW()
       WHERE id=?
     `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe, activo, req.params.id]);
+
+    // Sincronizar imagen principal en product_images (orden 0)
+    if (imagen) {
+      const [[first]] = await db.execute(
+        'SELECT id FROM product_images WHERE product_id = ? AND orden = 0',
+        [req.params.id]
+      );
+      if (first) {
+        await db.execute(
+          'UPDATE product_images SET url = ? WHERE id = ?',
+          [imagen, first.id]
+        );
+      } else {
+        await db.execute(
+          'INSERT INTO product_images (product_id, url, orden) VALUES (?, ?, 0)',
+          [req.params.id, imagen]
+        );
+      }
+    }
 
     console.log(`✅ Producto actualizado: ID ${sanitizeLog(req.params.id)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Producto actualizado correctamente' });
@@ -348,6 +519,7 @@ router.delete('/:id/permanent', authMiddleware, adminOnly, async (req, res) => {
     if (exists.length === 0)
       return res.status(404).json({ error: 'Producto no encontrado' });
 
+    await db.execute('DELETE FROM product_images WHERE product_id = ?', [req.params.id]);
     await db.execute('DELETE FROM inventory WHERE product_id = ?', [req.params.id]);
     await db.execute('DELETE FROM products WHERE id = ?', [req.params.id]);
 
