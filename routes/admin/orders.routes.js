@@ -50,29 +50,57 @@ router.get('/mis-pedidos', authMiddleware, async (req, res) => {
   try {
     const db = await getDB();
 
-    const [pedidos] = await db.execute(`
+    // Traer todos los sub-pedidos del usuario con su pedido_ref
+    const [rows] = await db.execute(`
       SELECT o.id, o.total, o.status, o.fecha, o.sucursal,
-             b.nombre AS sucursal_nombre
+             b.nombre AS sucursal_nombre,
+             COALESCE(o.pedido_ref, CAST(o.id AS CHAR)) AS pedido_ref
       FROM orders o
       LEFT JOIN branches b ON b.id = o.sucursal
       WHERE o.user_id = ?
       ORDER BY o.fecha DESC
     `, [req.user.id]);
 
-    for (const pedido of pedidos) {
-      try {
-        const [items] = await db.execute(`
-          SELECT oi.cantidad, oi.subtotal,
-                 p.nombre, p.imagen, p.categoria, p.marca
-          FROM order_items oi
-          JOIN products p ON p.id = oi.product_id
-          WHERE oi.order_id = ?
-        `, [pedido.id]);
-        pedido.items = items;
-      } catch {
-        pedido.items = [];
+    // Agrupar por pedido_ref → un solo objeto por compra
+    const mapaGrupos = {};
+    for (const row of rows) {
+      const ref = row.pedido_ref;
+      if (!mapaGrupos[ref]) {
+        mapaGrupos[ref] = {
+          id:              row.id,
+          pedido_ref:      ref,
+          status:          row.status,
+          fecha:           row.fecha,
+          sucursal:        row.sucursal,
+          sucursal_nombre: row.sucursal_nombre,
+          total:           0,
+          items:           [],
+          subIds:          [],
+        };
       }
+      mapaGrupos[ref].total  += Number(row.total);
+      mapaGrupos[ref].subIds.push(row.id);
     }
+
+    // Obtener items de todos los sub-pedidos y unirlos
+    for (const grupo of Object.values(mapaGrupos)) {
+      for (const subId of grupo.subIds) {
+        try {
+          const [items] = await db.execute(`
+            SELECT oi.cantidad, oi.subtotal,
+                   p.nombre, p.imagen, p.categoria, p.marca
+            FROM order_items oi
+            JOIN products p ON p.id = oi.product_id
+            WHERE oi.order_id = ?
+          `, [subId]);
+          grupo.items.push(...items);
+        } catch { /* skip */ }
+      }
+      delete grupo.subIds; // no exponer internamente
+    }
+
+    const pedidos = Object.values(mapaGrupos)
+      .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
 
     res.json(pedidos);
   } catch (err) {
@@ -207,6 +235,10 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const grupos = Object.values(porSucursal);
 
+    // UUID compartido para agrupar todos los sub-pedidos de esta compra
+    // Todos los INSERT de esta transacción usan el mismo pedido_ref
+    const pedidoRef = require('crypto').randomUUID();
+
     // Obtener conexión individual para la transacción
     // db.execute() no soporta START TRANSACTION en mysql2 con pool
     const conn = await db.getConnection();
@@ -217,9 +249,9 @@ router.post('/', authMiddleware, async (req, res) => {
 
       for (const grupo of grupos) {
         const [result] = await conn.execute(`
-          INSERT INTO orders (user_id, sucursal, total, status, fecha)
-          VALUES (?, ?, ?, 'pendiente', NOW())
-        `, [req.user.id, grupo.branch_id, grupo.subtotal]);
+          INSERT INTO orders (user_id, sucursal, total, status, fecha, pedido_ref)
+          VALUES (?, ?, ?, 'pendiente', NOW(), ?)
+        `, [req.user.id, grupo.branch_id, grupo.subtotal, pedidoRef]);
         const orderId = result.insertId;
         orderIds.push({ orderId, sucursal: grupo.branch_nombre });
         for (const item of grupo.items) {
@@ -236,11 +268,12 @@ router.post('/', authMiddleware, async (req, res) => {
       const sucursales = [...new Set(grupos.map(g => g.branch_nombre))];
       console.log(`✅ ${orderIds.length} pedido(s) | usuario ${req.user.id} | $${total} | ${sucursales.join(', ')}`);
       res.json({
-        message:  'Pedido creado correctamente',
-        orderId:  orderIds[0].orderId,
+        message:   'Pedido creado correctamente',
+        orderId:   orderIds[0].orderId,
+        pedidoRef,
         orderIds,
         sucursales,
-        sucursal: sucursales.length === 1 ? sucursales[0] : `${sucursales.length} sucursales`,
+        sucursal:  sucursales.length === 1 ? sucursales[0] : sucursales[0],
       });
     } catch (err) {
       await conn.rollback();
