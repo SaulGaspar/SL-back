@@ -80,6 +80,9 @@ app.use('/api/admin/orders',    adminOrders);
 app.use('/api/admin/dashboard', adminDashboard);
 app.use('/api/admin/backups',   backupsRoutes);
 app.use('/api/admin/monitor',   monitorRoutes);
-app.use('/api/admin/reports',   reportsRoutes);  // ← aquí, DESPUÉS de const app
+app.use('/api/admin/reports',   reportsRoutes);
+
+// Ruta pública para crear pedidos (cliente logueado, no admin)
+app.use('/api/orders', adminOrders);
 
 module.exports = app;
