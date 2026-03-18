@@ -3,8 +3,9 @@ const router = express.Router();
 
 const { getDB } = require('../../config/db');
 
-
-
+// ================================
+// 📦 GET /api/products
+// ================================
 router.get('/', async (req, res) => {
   const { q, categoria, marca } = req.query;
 
@@ -40,7 +41,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-
+// ================================
+// 📂 GET /api/products/categories
+// ================================
 router.get('/categories', async (req, res) => {
   try {
     const db = await getDB();
@@ -55,7 +58,9 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-
+// ================================
+// 🏷️ GET /api/products/marcas
+// ================================
 router.get('/marcas', async (req, res) => {
   try {
     const db = await getDB();
@@ -67,6 +72,25 @@ router.get('/marcas', async (req, res) => {
     res.json(rows.map(r => r.nombre));
   } catch (err) {
     res.status(500).json({ error: 'Error obteniendo marcas' });
+  }
+});
+
+// ================================
+// 🖼️ GET /api/products/:id/images  — público, sin auth
+// ================================
+router.get('/:id/images', async (req, res) => {
+  try {
+    const db = await getDB();
+    const [images] = await db.execute(`
+      SELECT id, url, orden
+      FROM product_images
+      WHERE product_id = ?
+      ORDER BY orden ASC
+    `, [req.params.id]);
+    res.json(images);
+  } catch (err) {
+    console.error('Error obteniendo imágenes:', err);
+    res.status(500).json({ error: 'Error obteniendo imágenes' });
   }
 });
 
