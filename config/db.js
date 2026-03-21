@@ -15,12 +15,10 @@ function getPool() {
 
     ssl: { rejectUnauthorized: false },
 
-    // ── Límites de conexión
     connectionLimit:    3,   
     waitForConnections: true,  
     queueLimit:         10,   
 
-    // ── Timeouts 
     connectTimeout:          10_000,  
     idleTimeout:             30_000,   
     enableKeepAlive:         true,
