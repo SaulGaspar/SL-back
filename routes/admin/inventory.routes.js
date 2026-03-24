@@ -15,8 +15,6 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // v_inventario_completo ya tiene el JOIN triple inventory+products+branches
-    // y calcula el campo "estado" automáticamente
     let sql    = `SELECT * FROM v_inventario_completo WHERE 1=1`;
     const params = [];
 
@@ -40,14 +38,12 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
 
 // ================================
 // 📊 GET /api/admin/inventory/stats
-// Usa la vista v_inventario_completo para los stats
 // ================================
 
 router.get('/stats', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // Stats generales desde la vista — un solo query en lugar de dos
     const [stats] = await db.execute(`
       SELECT
         COUNT(DISTINCT product_id)                                          AS total_productos,
@@ -59,7 +55,6 @@ router.get('/stats', authMiddleware, adminOnly, async (req, res) => {
       FROM v_inventario_completo
     `);
 
-    // Resumen por sucursal (también desde la vista)
     const [porSucursal] = await db.execute(`
       SELECT
         sucursal,
@@ -75,6 +70,92 @@ router.get('/stats', authMiddleware, adminOnly, async (req, res) => {
   } catch (err) {
     console.error('Error obteniendo estadísticas de inventario:', err);
     res.status(500).json({ error: 'Error obteniendo estadísticas' });
+  }
+});
+
+// ================================
+// 📉 GET /api/admin/inventory/prediccion-agotamiento
+// Algoritmo de decrecimiento lineal: T* = U₀ / r
+// donde r = ventas_periodo / dias_periodo
+// ⚠️  DEBE ir ANTES de /:id para que Express no lo confunda
+// ================================
+
+router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+    const DIAS_PERIODO = 30;
+
+    const [rows] = await db.execute(`
+      SELECT
+        i.id,
+        i.product_id,
+        i.branch_id,
+        i.stock        AS stock_actual,
+        i.min_stock,
+        p.nombre       AS producto,
+        p.categoria,
+        b.nombre       AS sucursal,
+        COALESCE(
+          (
+            SELECT SUM(oi.cantidad)
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id = i.product_id
+              AND o.sucursal    = i.branch_id
+              AND o.fecha      >= DATE_SUB(NOW(), INTERVAL ${DIAS_PERIODO} DAY)
+              AND o.status NOT IN ('cancelado')
+          ), 0
+        ) AS ventas_periodo
+      FROM inventory i
+      JOIN products  p ON p.id = i.product_id
+      JOIN branches  b ON b.id = i.branch_id
+      WHERE p.activo = 1
+      ORDER BY sucursal, producto
+    `);
+
+    const resultado = rows.map(row => {
+      const r = row.ventas_periodo / DIAS_PERIODO; // tasa diaria (u/día)
+      let dias_restantes   = null;
+      let fecha_agotamiento = null;
+      let mensaje          = null;
+      let alerta           = 'ok';
+
+      if (row.stock_actual === 0) {
+        alerta  = 'agotado';
+        mensaje = 'Sin stock';
+      } else if (r <= 0) {
+        alerta  = 'sin_movimiento';
+        mensaje = 'Sin ventas recientes — no se puede predecir';
+      } else {
+        dias_restantes = Math.floor(row.stock_actual / r);
+        const fecha = new Date();
+        fecha.setDate(fecha.getDate() + dias_restantes);
+        fecha_agotamiento = fecha.toISOString().slice(0, 10);
+        mensaje = `Este producto se agotará en aproximadamente ${dias_restantes} días`;
+
+        if      (dias_restantes <= 7)  alerta = 'critico';
+        else if (dias_restantes <= 15) alerta = 'bajo';
+        else if (dias_restantes <= 30) alerta = 'moderado';
+      }
+
+      return {
+        ...row,
+        tasa_diaria:      parseFloat(r.toFixed(2)),
+        dias_restantes,
+        fecha_agotamiento,
+        mensaje,
+        alerta,
+      };
+    });
+
+    // Ordenar por urgencia
+    const orden = { agotado: 0, critico: 1, bajo: 2, moderado: 3, sin_movimiento: 4, ok: 5 };
+    resultado.sort((a, b) => orden[a.alerta] - orden[b.alerta]);
+
+    res.json(resultado);
+  } catch (err) {
+    console.error('Error predicción agotamiento:', err.message);
+    res.status(500).json({ error: 'Error calculando predicción', detalle: err.message });
   }
 });
 
@@ -104,7 +185,6 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
     );
     if (branch.length === 0) return res.status(404).json({ error: 'Sucursal no encontrada' });
 
-    // Usamos la vista para verificar duplicado (más limpio que consultar inventory directamente)
     const [exists] = await db.execute(
       'SELECT id FROM inventory WHERE product_id = ? AND branch_id = ?',
       [product_id, branch_id]
@@ -140,7 +220,6 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // La vista nos da nombre de producto y sucursal sin JOIN manual
     const [exists] = await db.execute(
       'SELECT id, producto, sucursal FROM v_inventario_completo WHERE id = ?',
       [req.params.id]
@@ -205,7 +284,6 @@ router.post('/transfer', authMiddleware, adminOnly, async (req, res) => {
     await db.execute('START TRANSACTION');
 
     try {
-      // Consultar origen desde la vista (ya tiene stock, nombre de sucursal y producto)
       const [origen] = await db.execute(
         `SELECT id, stock, sucursal, producto
          FROM v_inventario_completo
@@ -255,7 +333,6 @@ router.post('/transfer', authMiddleware, adminOnly, async (req, res) => {
 
 // ================================
 // ➕ POST /api/admin/inventory/batch
-// Upsert masivo — una sola conexión
 // ================================
 
 router.post('/batch', authMiddleware, adminOnly, async (req, res) => {
@@ -313,7 +390,6 @@ router.post('/batch', authMiddleware, adminOnly, async (req, res) => {
 
 // ================================
 // ✏️ PUT /api/admin/inventory/batch-update
-// Actualización masiva — una sola conexión
 // ================================
 
 router.put('/batch-update', authMiddleware, adminOnly, async (req, res) => {
