@@ -42,18 +42,14 @@ router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-
 // ================================
 // 🔔 GET /api/orders/notificaciones
-// Actualizaciones de pedidos del usuario logueado
-// PEGA EN orders.routes.js ANTES del GET /:id
 // ================================
 router.get('/notificaciones', authMiddleware, async (req, res) => {
   try {
     const db    = await getDB();
     const since = req.query.since || new Date(Date.now() - 7 * 86400000).toISOString();
 
-    // Pedidos del usuario que cambiaron de status recientemente
     const [pedidos] = await db.execute(`
       SELECT o.id, o.total, o.status, o.fecha, o.sucursal,
              b.nombre AS sucursal_nombre,
@@ -72,7 +68,6 @@ router.get('/notificaciones', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // ================================
 // 🔔 GET /nuevos — pedidos recientes para notificaciones admin
@@ -106,13 +101,12 @@ router.get('/nuevos', authMiddleware, adminOnly, async (req, res) => {
 
 // ================================
 // 📋 GET /mis-pedidos  ← cliente logueado
-// ⚠️  ANTES de /:id para que Express no lo confunda con un parámetro
+// ⚠️  ANTES de /:id
 // ================================
 router.get('/mis-pedidos', authMiddleware, async (req, res) => {
   try {
     const db = await getDB();
 
-    // Traer todos los sub-pedidos del usuario con su pedido_ref
     const [rows] = await db.execute(`
       SELECT o.id, o.total, o.status, o.fecha, o.sucursal,
              b.nombre AS sucursal_nombre,
@@ -123,7 +117,6 @@ router.get('/mis-pedidos', authMiddleware, async (req, res) => {
       ORDER BY o.fecha DESC
     `, [req.user.id]);
 
-    // Agrupar por pedido_ref → un solo objeto por compra
     const mapaGrupos = {};
     for (const row of rows) {
       const ref = row.pedido_ref;
@@ -144,7 +137,6 @@ router.get('/mis-pedidos', authMiddleware, async (req, res) => {
       mapaGrupos[ref].subIds.push(row.id);
     }
 
-    // Obtener items de todos los sub-pedidos y unirlos
     for (const grupo of Object.values(mapaGrupos)) {
       for (const subId of grupo.subIds) {
         try {
@@ -158,7 +150,7 @@ router.get('/mis-pedidos', authMiddleware, async (req, res) => {
           grupo.items.push(...items);
         } catch { /* skip */ }
       }
-      delete grupo.subIds; // no exponer internamente
+      delete grupo.subIds;
     }
 
     const pedidos = Object.values(mapaGrupos)
@@ -201,7 +193,6 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
     res.status(500).json({ error: 'Error obteniendo órdenes', detalle: err.message });
   }
 });
-
 
 // ================================
 // 📄 GET /:id  (admin)
@@ -255,6 +246,7 @@ router.patch('/:id/status', authMiddleware, adminOnly, async (req, res) => {
 // ================================
 router.post('/', authMiddleware, async (req, res) => {
   const { total, items } = req.body;
+
   if (!items || !Array.isArray(items) || items.length === 0)
     return res.status(400).json({ error: 'El pedido no tiene productos' });
   if (!total || total <= 0)
@@ -264,63 +256,90 @@ router.post('/', authMiddleware, async (req, res) => {
     const db = await getDB();
     const itemsConSucursal = [];
 
+    // ── 1. Asignar sucursal a cada ítem y validar stock ──────────────────
     for (const item of items) {
       const { product_id, cantidad } = item;
+
+      // Buscar sucursal con stock suficiente para la cantidad pedida
       const [rows] = await db.execute(`
         SELECT i.branch_id, b.nombre, i.stock
-        FROM inventory i JOIN branches b ON b.id = i.branch_id
-        WHERE i.product_id = ? AND b.activo = 1 AND i.stock >= ?
-        ORDER BY i.stock DESC LIMIT 1
+        FROM inventory i
+        JOIN branches b ON b.id = i.branch_id
+        WHERE i.product_id = ?
+          AND b.activo = 1
+          AND i.stock >= ?
+        ORDER BY i.stock DESC
+        LIMIT 1
       `, [product_id, cantidad]);
 
+      // ✅ Si no hay ninguna sucursal con stock suficiente → rechazar pedido
       if (rows.length === 0) {
-        const [fallback] = await db.execute(`
-          SELECT i.branch_id, b.nombre FROM inventory i
-          JOIN branches b ON b.id = i.branch_id
-          WHERE i.product_id = ? AND b.activo = 1 AND i.stock > 0
-          ORDER BY i.stock DESC LIMIT 1
-        `, [product_id]);
-        const suc = fallback[0] || { branch_id: 1, nombre: 'Principal' };
-        itemsConSucursal.push({ ...item, branch_id: suc.branch_id, branch_nombre: suc.nombre });
-      } else {
-        itemsConSucursal.push({ ...item, branch_id: rows[0].branch_id, branch_nombre: rows[0].nombre });
+        const [pNombre] = await db.execute(
+          'SELECT nombre FROM products WHERE id = ?', [product_id]
+        );
+        const nombre = pNombre[0]?.nombre || `Producto ID ${product_id}`;
+        return res.status(400).json({
+          error: `Stock insuficiente para "${nombre}". Verifica la disponibilidad e intenta de nuevo.`,
+          product_id,
+        });
       }
+
+      itemsConSucursal.push({
+        ...item,
+        branch_id:    rows[0].branch_id,
+        branch_nombre: rows[0].nombre,
+      });
     }
 
+    // ── 2. Agrupar ítems por sucursal ─────────────────────────────────────
     const porSucursal = {};
     for (const item of itemsConSucursal) {
       const key = item.branch_id;
-      if (!porSucursal[key])
-        porSucursal[key] = { branch_id: item.branch_id, branch_nombre: item.branch_nombre, items: [], subtotal: 0 };
+      if (!porSucursal[key]) {
+        porSucursal[key] = {
+          branch_id:    item.branch_id,
+          branch_nombre: item.branch_nombre,
+          items:        [],
+          subtotal:     0,
+        };
+      }
       porSucursal[key].items.push(item);
       porSucursal[key].subtotal += Number(item.subtotal);
     }
 
-    const grupos = Object.values(porSucursal);
-
-    // UUID compartido para agrupar todos los sub-pedidos de esta compra
-    // Todos los INSERT de esta transacción usan el mismo pedido_ref
+    const grupos    = Object.values(porSucursal);
     const pedidoRef = require('crypto').randomUUID();
-
-    // Obtener conexión individual para la transacción
-    // db.execute() no soporta START TRANSACTION en mysql2 con pool
-    const conn = await db.getConnection();
-    const orderIds = [];
+    const conn      = await db.getConnection();
+    const orderIds  = [];
 
     try {
       await conn.beginTransaction();
 
       for (const grupo of grupos) {
+        // ── 3a. Crear la orden ────────────────────────────────────────────
         const [result] = await conn.execute(`
           INSERT INTO orders (user_id, sucursal, total, status, fecha, pedido_ref)
           VALUES (?, ?, ?, 'pendiente', NOW(), ?)
         `, [req.user.id, grupo.branch_id, grupo.subtotal, pedidoRef]);
+
         const orderId = result.insertId;
         orderIds.push({ orderId, sucursal: grupo.branch_nombre });
+
         for (const item of grupo.items) {
+          // ── 3b. Insertar ítem del pedido ──────────────────────────────
           await conn.execute(
-            `INSERT INTO order_items (order_id, product_id, cantidad, subtotal) VALUES (?, ?, ?, ?)`,
+            `INSERT INTO order_items (order_id, product_id, cantidad, subtotal)
+             VALUES (?, ?, ?, ?)`,
             [orderId, item.product_id, item.cantidad, item.subtotal]
+          );
+
+          // ── 3c. ✅ DESCONTAR STOCK en la sucursal asignada ────────────
+          // GREATEST(..., 0) evita stock negativo por condición de carrera
+          await conn.execute(
+            `UPDATE inventory
+             SET stock = GREATEST(stock - ?, 0)
+             WHERE product_id = ? AND branch_id = ?`,
+            [item.cantidad, item.product_id, grupo.branch_id]
           );
         }
       }
@@ -329,20 +348,25 @@ router.post('/', authMiddleware, async (req, res) => {
       conn.release();
 
       const sucursales = [...new Set(grupos.map(g => g.branch_nombre))];
-      console.log(`✅ ${orderIds.length} pedido(s) | usuario ${req.user.id} | $${total} | ${sucursales.join(', ')}`);
+      console.log(
+        `✅ ${orderIds.length} pedido(s) creado(s) | usuario ${req.user.id} | $${total} | ${sucursales.join(', ')}`
+      );
+
       res.json({
         message:   'Pedido creado correctamente',
         orderId:   orderIds[0].orderId,
         pedidoRef,
         orderIds,
         sucursales,
-        sucursal:  sucursales.length === 1 ? sucursales[0] : sucursales[0],
+        sucursal:  sucursales[0],
       });
+
     } catch (err) {
       await conn.rollback();
       conn.release();
       throw err;
     }
+
   } catch (err) {
     console.error('Error creando pedido:', err);
     res.status(500).json({ error: 'Error al procesar el pedido', detalle: err.message });
