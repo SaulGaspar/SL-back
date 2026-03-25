@@ -124,9 +124,11 @@ router.get('/prediccion-publica', async (req, res) => {
       } else if (r <= 0) {
         alerta = 'sin_movimiento';
       } else {
-        dias_restantes = Math.floor(row.stock_actual / r);
+        // ✅ Sin Math.floor — valor decimal para que el frontend calcule horas exactas
+        dias_restantes = row.stock_actual / r;
+
         const fecha = new Date();
-        fecha.setDate(fecha.getDate() + dias_restantes);
+        fecha.setDate(fecha.getDate() + Math.floor(dias_restantes));
         fecha_agotamiento = fecha.toISOString().slice(0, 10);
 
         if      (dias_restantes <= 7)  alerta = 'critico';
@@ -139,8 +141,8 @@ router.get('/prediccion-publica', async (req, res) => {
         branch_id:        row.branch_id,
         stock_actual:     row.stock_actual,
         ventas_periodo:   Number(row.ventas_periodo),
-        tasa_diaria:      parseFloat(r.toFixed(2)),
-        dias_restantes,
+        tasa_diaria:      parseFloat(r.toFixed(4)),
+        dias_restantes,                            // ✅ decimal, ej: 0.208 = 5 horas
         fecha_agotamiento,
         alerta,
       };
@@ -156,8 +158,6 @@ router.get('/prediccion-publica', async (req, res) => {
 // ================================
 // 🖼️ GET /api/products/:id/images  — público, sin auth
 // ⚠️  SIEMPRE después de todas las rutas con nombre fijo
-//     (categories, marcas, prediccion-publica) para que
-//     Express no las confunda con un :id
 // ================================
 router.get('/:id/images', async (req, res) => {
   try {
