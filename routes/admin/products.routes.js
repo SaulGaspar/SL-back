@@ -6,8 +6,9 @@ const { authMiddleware, adminOnly }  = require('../../middlewares/auth');
 const { sanitizeInput }              = require('../../helpers/validators');
 const { sanitizeLog }                = require('../../helpers/sanitizeLog');
 
+// ================================
 // GET /api/admin/products/stats/summary
-
+// ================================
 router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -46,8 +47,9 @@ router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // GET /api/admin/products/search
-
+// ================================
 router.get('/search', authMiddleware, adminOnly, async (req, res) => {
   const { q, categoria, marca, activo } = req.query;
 
@@ -75,8 +77,9 @@ router.get('/search', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // GET /api/admin/products/categories
-
+// ================================
 router.get('/categories', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -92,8 +95,9 @@ router.get('/categories', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // GET /api/admin/products/marcas
-
+// ================================
 router.get('/marcas', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -109,8 +113,9 @@ router.get('/marcas', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // GET /api/admin/products
-
+// ================================
 router.get('/', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -125,8 +130,10 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // GET /api/admin/products/:id
-
+// ⚠️  SIEMPRE después de todas las rutas con nombre fijo
+// ================================
 router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -157,8 +164,9 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // GET /api/admin/products/:id/images
-
+// ================================
 router.get('/:id/images', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -175,8 +183,9 @@ router.get('/:id/images', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // POST /api/admin/products/:id/images
-
+// ================================
 router.post('/:id/images', authMiddleware, adminOnly, async (req, res) => {
   const { url, orden } = req.body;
   if (!url) return res.status(400).json({ error: 'URL de imagen requerida' });
@@ -217,8 +226,9 @@ router.post('/:id/images', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // DELETE /api/admin/products/images/:imageId
-
+// ================================
 router.delete('/images/:imageId', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -252,8 +262,9 @@ router.delete('/images/:imageId', authMiddleware, adminOnly, async (req, res) =>
   }
 });
 
+// ================================
 // PATCH /api/admin/products/images/reorder
-
+// ================================
 router.patch('/images/reorder', authMiddleware, adminOnly, async (req, res) => {
   const { product_id, images } = req.body;
   if (!product_id || !Array.isArray(images))
@@ -287,8 +298,9 @@ router.patch('/images/reorder', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // POST /api/admin/products
-
+// ================================
 router.post('/', authMiddleware, adminOnly, async (req, res) => {
   const { nombre, marca, descripcion, precio, categoria, imagen, talla, colores, inventario } = req.body;
 
@@ -341,8 +353,9 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // PUT /api/admin/products/:id
-
+// ================================
 router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
   const { nombre, marca, descripcion, precio, categoria, imagen, talla, colores, activo } = req.body;
 
@@ -371,7 +384,6 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
       WHERE id=?
     `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe, activo, req.params.id]);
 
-    // Sincronizar imagen principal en product_images (orden 0)
     if (imagen) {
       const [[first]] = await db.execute(
         'SELECT id FROM product_images WHERE product_id = ? AND orden = 0',
@@ -398,8 +410,9 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // PUT /api/admin/products/:id/inventory
-
+// ================================
 router.put('/:id/inventory', authMiddleware, adminOnly, async (req, res) => {
   const { inventario } = req.body;
 
@@ -430,8 +443,9 @@ router.put('/:id/inventory', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // PATCH /api/admin/products/:id/reactivate
-
+// ================================
 router.patch('/:id/reactivate', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -448,8 +462,9 @@ router.patch('/:id/reactivate', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// DELETE /api/admin/products/:id 
-
+// ================================
+// DELETE /api/admin/products/:id
+// ================================
 router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
@@ -466,8 +481,9 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// ================================
 // DELETE /api/admin/products/:id/permanent
-
+// ================================
 router.delete('/:id/permanent', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();

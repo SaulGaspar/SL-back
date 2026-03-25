@@ -76,7 +76,88 @@ router.get('/marcas', async (req, res) => {
 });
 
 // ================================
+// 📉 GET /api/products/prediccion-publica
+// Algoritmo de decrecimiento lineal: T* = U₀ / r
+// Endpoint público — sin autenticación requerida
+// ⚠️  DEBE ir ANTES de /:id/images para que Express
+//     no interprete "prediccion-publica" como un :id
+// ================================
+router.get('/prediccion-publica', async (req, res) => {
+  try {
+    const db = await getDB();
+    const DIAS_PERIODO = 30;
+
+    const [rows] = await db.execute(`
+      SELECT
+        i.product_id,
+        i.branch_id,
+        i.stock        AS stock_actual,
+        p.nombre       AS producto,
+        p.categoria,
+        b.nombre       AS sucursal,
+        COALESCE(
+          (
+            SELECT SUM(oi.cantidad)
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE oi.product_id = i.product_id
+              AND o.sucursal    = i.branch_id
+              AND o.fecha      >= DATE_SUB(NOW(), INTERVAL ${DIAS_PERIODO} DAY)
+              AND o.status NOT IN ('cancelado')
+          ), 0
+        ) AS ventas_periodo
+      FROM inventory i
+      JOIN products  p ON p.id = i.product_id
+      JOIN branches  b ON b.id = i.branch_id
+      WHERE p.activo = 1
+      ORDER BY i.product_id
+    `);
+
+    const resultado = rows.map(row => {
+      const r = row.ventas_periodo / DIAS_PERIODO; // tasa diaria (u/día)
+      let dias_restantes    = null;
+      let fecha_agotamiento = null;
+      let alerta            = 'ok';
+
+      if (row.stock_actual === 0) {
+        alerta = 'agotado';
+      } else if (r <= 0) {
+        alerta = 'sin_movimiento';
+      } else {
+        dias_restantes = Math.floor(row.stock_actual / r);
+        const fecha = new Date();
+        fecha.setDate(fecha.getDate() + dias_restantes);
+        fecha_agotamiento = fecha.toISOString().slice(0, 10);
+
+        if      (dias_restantes <= 7)  alerta = 'critico';
+        else if (dias_restantes <= 15) alerta = 'bajo';
+        else if (dias_restantes <= 30) alerta = 'moderado';
+      }
+
+      return {
+        product_id:       row.product_id,
+        branch_id:        row.branch_id,
+        stock_actual:     row.stock_actual,
+        ventas_periodo:   Number(row.ventas_periodo),
+        tasa_diaria:      parseFloat(r.toFixed(2)),
+        dias_restantes,
+        fecha_agotamiento,
+        alerta,
+      };
+    });
+
+    res.json(resultado);
+  } catch (err) {
+    console.error('Error predicción pública:', err.message);
+    res.status(500).json({ error: 'Error calculando predicción' });
+  }
+});
+
+// ================================
 // 🖼️ GET /api/products/:id/images  — público, sin auth
+// ⚠️  SIEMPRE después de todas las rutas con nombre fijo
+//     (categories, marcas, prediccion-publica) para que
+//     Express no las confunda con un :id
 // ================================
 router.get('/:id/images', async (req, res) => {
   try {
