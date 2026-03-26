@@ -1,13 +1,14 @@
 // routes/admin/backups.js
-const express = require('express');
-const router  = express.Router();
+const express    = require('express');
+const router     = express.Router();
+const cron       = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
 
-const { getDB }          = require('../../config/db');
-const { authMiddleware, adminOnly } = require('../../middlewares/auth');
-const { TABLAS, generarSQLTabla }   = require('../../utils/backupHelper');
+const { getDB }                        = require('../../config/db');
+const { authMiddleware, adminOnly }    = require('../../middlewares/auth');
+const { TABLAS, generarSQLTabla }      = require('../../utils/backupHelper');
 
-// ── Supabase client ──────────────────────────────────────────────────────────
+// ── Supabase client ──────────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
@@ -15,10 +16,13 @@ const supabase = createClient(
 
 const BUCKET = 'backup';
 
-// ── Helper interno para ejecutar el backup ───────────────────────────────────
+// ── Jobs en memoria (id -> cron task) ────────────────────────
+const activeJobs = {};
+
+// ── Helper: ejecutar un backup completo ─────────────────────
 async function ejecutarBackup(db, tipo = 'manual', autor = 'sistema') {
-  const ahora = new Date();
-  const fecha = ahora.toISOString().slice(0,19).replace(/:/g,'-').replace('T','_');
+  const ahora  = new Date();
+  const fecha  = ahora.toISOString().slice(0, 19).replace(/:/g, '-').replace('T', '_');
   const nombre = tipo === 'manual'
     ? `backup_${fecha}.sql`
     : `backup_auto_${tipo}_${fecha}.sql`;
@@ -58,7 +62,7 @@ async function ejecutarBackup(db, tipo = 'manual', autor = 'sistema') {
   return { nombre, tamanioBytes, storagePath };
 }
 
-// ── Helper: limpiar backups automáticos con más de 7 días ───────────────────
+// ── Helper: limpiar backups automáticos > 7 días ─────────────
 async function limpiarBackupsAntiguos(db) {
   const DIAS = 7;
   const [viejos] = await db.execute(
@@ -66,62 +70,83 @@ async function limpiarBackupsAntiguos(db) {
      WHERE creado_por = 'sistema' AND creado_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
     [DIAS]
   );
-
   for (const b of viejos) {
     await supabase.storage.from(BUCKET).remove([b.storage_path]);
     await db.execute('DELETE FROM backups WHERE id = ?', [b.id]);
     console.log(`🧹 Backup antiguo eliminado: ${b.nombre}`);
   }
+}
 
-  if (viejos.length > 0) {
-    console.log(`🧹 Total eliminados: ${viejos.length} backup(s) automático(s) con más de ${DIAS} días`);
-  } else {
-    console.log(`🧹 Sin backups automáticos antiguos que limpiar`);
+// ── Helper: convertir schedule a expresión cron ──────────────
+function toCronExpr(schedule) {
+  const [h, m] = (schedule.hora || '02:00').split(':').map(Number);
+  switch (schedule.frecuencia) {
+    case 'diario':  return `${m} ${h} * * *`;
+    case 'semanal': return `${m} ${h} * * ${schedule.dia_semana ?? 0}`;
+    case 'mensual': return `${m} ${h} 1 * *`;
+    case 'horas':   return `0 */${schedule.cada_horas ?? 6} * * *`;
+    default:        return `${m} ${h} * * *`;
   }
 }
 
+// ── Iniciar todos los schedules activos al arrancar ──────────
+async function iniciarSchedules() {
+  try {
+    const db = await getDB();
+    const [rows] = await db.execute(
+      `SELECT * FROM backup_schedules WHERE activo = 1`
+    ).catch(() => [[]]);
+
+    for (const sch of rows) {
+      const expr = toCronExpr(sch);
+      if (!cron.validate(expr)) continue;
+
+      activeJobs[sch.id] = cron.schedule(expr, async () => {
+        try {
+          const db2    = await getDB();
+          const result = await ejecutarBackup(db2, sch.frecuencia, 'sistema');
+          await db2.execute(
+            `UPDATE backup_schedules SET ultima_ejecucion = NOW() WHERE id = ?`, [sch.id]
+          );
+          console.log(`✅ [Schedule ${sch.id}] ${result.nombre}`);
+        } catch (err) {
+          console.error(`❌ [Schedule ${sch.id}]`, err.message);
+        }
+      }, { timezone: 'America/Mexico_City' });
+
+      console.log(`📅 Schedule ${sch.id} activado: ${expr} (${sch.frecuencia})`);
+    }
+  } catch (err) {
+    console.error('Error iniciando schedules:', err.message);
+  }
+}
+
+iniciarSchedules();
+
 // ================================
 // 🤖 GET /api/admin/backups/cron
-// Llamado exclusivamente por Vercel Cron Jobs
-// Horario actual: 6:30 AM UTC = 12:30 AM México (prueba)
-// Horario final:  8:00 AM UTC =  2:00 AM México (producción)
+// Llamado por Vercel Cron Jobs
 // ================================
 router.get('/cron', async (req, res) => {
   const authHeader = req.headers['authorization'];
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    console.warn('⛔ Intento no autorizado al endpoint /cron');
     return res.status(401).json({ error: 'No autorizado' });
   }
 
   const ahora  = new Date();
   const dia    = ahora.getUTCDate();
-  const diaSem = ahora.getUTCDay(); // 0 = domingo
+  const diaSem = ahora.getUTCDay();
 
-  // Un solo cron diario decide el tipo según la fecha
   let tipo = 'diario';
   if (dia === 1)         tipo = 'mensual';
   else if (diaSem === 0) tipo = 'semanal';
 
-  console.log(`\n🤖 Cron ejecutado — tipo: ${tipo} | ${ahora.toISOString()}`);
-
   try {
     const db     = await getDB();
     const result = await ejecutarBackup(db, tipo, 'sistema');
-
-    console.log(`✅ Backup automático: ${result.nombre} (${(result.tamanioBytes/1024).toFixed(1)} KB)`);
-
-    // Limpiar backups automáticos con más de 7 días
     await limpiarBackupsAntiguos(db);
-
-    return res.json({
-      ok           : true,
-      tipo,
-      nombre       : result.nombre,
-      tamanio_bytes: result.tamanioBytes,
-    });
-
+    return res.json({ ok: true, tipo, nombre: result.nombre, tamanio_bytes: result.tamanioBytes });
   } catch (err) {
-    console.error('❌ Error en cron de backup:', err.message);
     return res.status(500).json({ error: 'Error ejecutando backup automático', detalle: err.message });
   }
 });
@@ -133,16 +158,12 @@ router.post('/generate', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db     = await getDB();
     const result = await ejecutarBackup(db, 'manual', req.user.usuario);
-
-    console.log(`✅ Backup manual: ${result.nombre} por ${req.user.usuario}`);
-
     res.json({
-      message      : 'Backup generado correctamente',
-      nombre       : result.nombre,
+      message:       'Backup generado correctamente',
+      nombre:        result.nombre,
       tamanio_bytes: result.tamanioBytes,
-      storage_path : result.storagePath,
+      storage_path:  result.storagePath,
     });
-
   } catch (err) {
     console.error('Error generando backup:', err);
     res.status(500).json({ error: 'Error generando el backup', detalle: err.message });
@@ -172,19 +193,14 @@ router.get('/:id/download', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute('SELECT * FROM backups WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Backup no encontrado' });
 
-    if (rows.length === 0) return res.status(404).json({ error: 'Backup no encontrado' });
-
-    const backup = rows[0];
     const { data, error } = await supabase.storage
       .from(BUCKET)
-      .createSignedUrl(backup.storage_path, 60);
+      .createSignedUrl(rows[0].storage_path, 60);
 
     if (error) return res.status(500).json({ error: 'Error generando enlace de descarga' });
-
-    console.log(`📥 Descarga: ${backup.nombre} por ${req.user.usuario}`);
-    res.json({ url: data.signedUrl, nombre: backup.nombre });
-
+    res.json({ url: data.signedUrl, nombre: rows[0].nombre });
   } catch (err) {
     res.status(500).json({ error: 'Error procesando descarga' });
   }
@@ -197,19 +213,156 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute('SELECT * FROM backups WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Backup no encontrado' });
 
-    if (rows.length === 0) return res.status(404).json({ error: 'Backup no encontrado' });
-
-    const backup = rows[0];
-
-    await supabase.storage.from(BUCKET).remove([backup.storage_path]);
+    await supabase.storage.from(BUCKET).remove([rows[0].storage_path]);
     await db.execute('DELETE FROM backups WHERE id = ?', [req.params.id]);
-
-    console.log(`🗑️ Backup eliminado: ${backup.nombre} por ${req.user.usuario}`);
     res.json({ message: 'Backup eliminado correctamente' });
-
   } catch (err) {
     res.status(500).json({ error: 'Error eliminando backup' });
+  }
+});
+
+// ================================
+// 📋 GET /api/admin/backups/schedules
+// ================================
+router.get('/schedules', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+    const [rows] = await db.execute(
+      `SELECT * FROM backup_schedules ORDER BY creado_at DESC`
+    ).catch(() => [[]]);
+
+    res.json(rows.map(s => ({
+      ...s,
+      running:   !!activeJobs[s.id],
+      cron_expr: toCronExpr(s),
+    })));
+  } catch (err) {
+    res.status(500).json({ error: 'Error obteniendo schedules' });
+  }
+});
+
+// ================================
+// ➕ POST /api/admin/backups/schedules
+// Body: { frecuencia, hora, dia_semana?, cada_horas?, nombre? }
+// ================================
+router.post('/schedules', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+    const {
+      frecuencia, hora = '02:00',
+      dia_semana = null, cada_horas = null,
+      nombre = 'Respaldo automático',
+    } = req.body;
+
+    if (!frecuencia) return res.status(400).json({ error: 'frecuencia es requerida' });
+
+    const [result] = await db.execute(
+      `INSERT INTO backup_schedules (nombre, frecuencia, hora, dia_semana, cada_horas, activo, creado_por)
+       VALUES (?, ?, ?, ?, ?, 1, ?)`,
+      [nombre, frecuencia, hora, dia_semana, cada_horas, req.user.usuario]
+    );
+
+    const newId    = result.insertId;
+    const schedule = { id: newId, frecuencia, hora, dia_semana, cada_horas };
+    const expr     = toCronExpr(schedule);
+
+    if (cron.validate(expr)) {
+      activeJobs[newId] = cron.schedule(expr, async () => {
+        try {
+          const db2 = await getDB();
+          const r   = await ejecutarBackup(db2, frecuencia, 'sistema');
+          await db2.execute(`UPDATE backup_schedules SET ultima_ejecucion = NOW() WHERE id = ?`, [newId]);
+          console.log(`✅ [Schedule ${newId}] ${r.nombre}`);
+        } catch (err) {
+          console.error(`❌ [Schedule ${newId}]`, err.message);
+        }
+      }, { timezone: 'America/Mexico_City' });
+    }
+
+    res.json({ message: 'Schedule creado y activado', id: newId, cron_expr: expr });
+  } catch (err) {
+    console.error('Error creando schedule:', err);
+    res.status(500).json({ error: 'Error creando schedule' });
+  }
+});
+
+// ================================
+// ⏸️ PATCH /api/admin/backups/schedules/:id/toggle
+// ================================
+router.patch('/schedules/:id/toggle', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db  = await getDB();
+    const id  = parseInt(req.params.id);
+    const [rows] = await db.execute(`SELECT * FROM backup_schedules WHERE id = ?`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'Schedule no encontrado' });
+
+    const sch    = rows[0];
+    const newVal = sch.activo ? 0 : 1;
+
+    await db.execute(`UPDATE backup_schedules SET activo = ? WHERE id = ?`, [newVal, id]);
+
+    if (newVal === 0) {
+      if (activeJobs[id]) { activeJobs[id].stop(); delete activeJobs[id]; }
+    } else {
+      const expr = toCronExpr(sch);
+      if (cron.validate(expr)) {
+        activeJobs[id] = cron.schedule(expr, async () => {
+          try {
+            const db2 = await getDB();
+            const r   = await ejecutarBackup(db2, sch.frecuencia, 'sistema');
+            await db2.execute(`UPDATE backup_schedules SET ultima_ejecucion = NOW() WHERE id = ?`, [id]);
+            console.log(`✅ [Schedule ${id}] ${r.nombre}`);
+          } catch (err) { console.error(`❌ [Schedule ${id}]`, err.message); }
+        }, { timezone: 'America/Mexico_City' });
+      }
+    }
+
+    res.json({ message: newVal ? 'Schedule activado' : 'Schedule pausado', activo: newVal });
+  } catch (err) {
+    console.error('Error en toggle schedule:', err);
+    res.status(500).json({ error: 'Error actualizando schedule' });
+  }
+});
+
+// ================================
+// ▶️ POST /api/admin/backups/schedules/:id/run
+// ================================
+router.post('/schedules/:id/run', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db     = await getDB();
+    const [rows] = await db.execute(`SELECT * FROM backup_schedules WHERE id = ?`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Schedule no encontrado' });
+
+    const sch    = rows[0];
+    const result = await ejecutarBackup(db, sch.frecuencia, req.user.usuario);
+    await db.execute(`UPDATE backup_schedules SET ultima_ejecucion = NOW() WHERE id = ?`, [sch.id]);
+
+    res.json({ message: 'Backup ejecutado', nombre: result.nombre, tamanio_bytes: result.tamanioBytes });
+  } catch (err) {
+    console.error('Error en run manual:', err);
+    res.status(500).json({ error: 'Error ejecutando backup manual' });
+  }
+});
+
+// ================================
+// 🗑️ DELETE /api/admin/backups/schedules/:id
+// ================================
+router.delete('/schedules/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db  = await getDB();
+    const id  = parseInt(req.params.id);
+    const [rows] = await db.execute(`SELECT * FROM backup_schedules WHERE id = ?`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'Schedule no encontrado' });
+
+    if (activeJobs[id]) { activeJobs[id].stop(); delete activeJobs[id]; }
+    await db.execute(`DELETE FROM backup_schedules WHERE id = ?`, [id]);
+
+    res.json({ message: 'Schedule eliminado' });
+  } catch (err) {
+    console.error('Error eliminando schedule:', err);
+    res.status(500).json({ error: 'Error eliminando schedule' });
   }
 });
 

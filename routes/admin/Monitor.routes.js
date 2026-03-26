@@ -219,7 +219,6 @@ router.get('/schema', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // ── Vistas ─
     const [views] = await db.execute(`
       SELECT table_name AS view_name
       FROM information_schema.views
@@ -239,7 +238,6 @@ router.get('/schema', authMiddleware, adminOnly, async (req, res) => {
       }
     }
 
-    // ── Índices via SHOW INDEX ──
     const [tableList] = await db.execute(`
       SELECT table_name AS tname
       FROM information_schema.tables
@@ -272,17 +270,16 @@ router.get('/schema', authMiddleware, adminOnly, async (req, res) => {
             });
           }
         }
-      } catch { /* tabla sin permisos, skip */ }
+      } catch { }
     }
 
     idxSummary.sort((a, b) => b.total_indexes - a.total_indexes);
 
-    // ── Usuarios BD ─────────────────────────────────────────
     let dbUsers = [];
     try {
       const [u] = await db.execute(`SELECT user AS username, host FROM mysql.user WHERE user LIKE 'sl_%'`);
       dbUsers = u;
-    } catch { /* sin permiso a mysql.user — normal en Aiven */ }
+    } catch { }
 
     res.json({
       views:       viewStats,
@@ -296,30 +293,18 @@ router.get('/schema', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-
-// ============================================================
-// PEGA ESTAS DOS RUTAS EN: routes/admin/monitor.js
-// ANTES de la línea: module.exports = router;
-// ============================================================
-
-// ============================================================
+// ================================
 // ⚡ GET /api/admin/monitor/performance
-//    Métricas de rendimiento reales de MySQL:
-//    - Buffer pool hit rate (proxy de uso de memoria)
-//    - Queries lentas con digest (performance_schema)
-//    - Top tablas por I/O (lecturas + escrituras)
-//    - Variables InnoDB relevantes
-// ============================================================
+// ================================
 router.get('/performance', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // ── 1. Variables de estado del servidor (SHOW STATUS) ──────────
     const statusVars = [
-      'Innodb_buffer_pool_reads',        // lecturas que fueron a disco (cache miss)
-      'Innodb_buffer_pool_read_requests', // total de lecturas solicitadas
-      'Innodb_buffer_pool_pages_data',   // páginas con datos en buffer
-      'Innodb_buffer_pool_pages_total',  // total de páginas en buffer
+      'Innodb_buffer_pool_reads',
+      'Innodb_buffer_pool_read_requests',
+      'Innodb_buffer_pool_pages_data',
+      'Innodb_buffer_pool_pages_total',
       'Innodb_rows_read',
       'Innodb_rows_inserted',
       'Innodb_rows_updated',
@@ -330,46 +315,38 @@ router.get('/performance', authMiddleware, adminOnly, async (req, res) => {
       'Innodb_row_lock_time_avg',
       'Sort_rows',
       'Sort_merge_passes',
-      'Handler_read_rnd_next',           // full table scans (alto = mal)
-      'Handler_read_key',                // lecturas por índice (alto = bien)
-      'Created_tmp_disk_tables',         // tablas tmp en disco (malo)
-      'Created_tmp_tables',              // total tablas tmp
-      'Select_full_join',                // joins sin índice (malo)
-      'Select_scan',                     // full scans
+      'Handler_read_rnd_next',
+      'Handler_read_key',
+      'Created_tmp_disk_tables',
+      'Created_tmp_tables',
+      'Select_full_join',
+      'Select_scan',
     ];
 
     const statusMap = {};
     for (const varName of statusVars) {
       try {
         const [rows] = await db.execute(`SHOW STATUS LIKE ?`, [varName]);
-        if (rows.length > 0) {
-          statusMap[varName] = parseInt(rows[0].Value || rows[0].value || 0);
-        }
+        if (rows.length > 0) statusMap[varName] = parseInt(rows[0].Value || rows[0].value || 0);
       } catch { statusMap[varName] = null; }
     }
 
-    // ── 2. Buffer pool hit rate ────────────────────────────────────
     const reads    = statusMap['Innodb_buffer_pool_reads']         || 0;
     const requests = statusMap['Innodb_buffer_pool_read_requests'] || 1;
     const bufferHitRate = requests > 0
       ? parseFloat(((1 - reads / requests) * 100).toFixed(2))
       : null;
 
-    // ── 3. Ratio de tablas temp en disco ──────────────────────────
     const tmpDisk  = statusMap['Created_tmp_disk_tables'] || 0;
     const tmpTotal = statusMap['Created_tmp_tables']      || 1;
-    const tmpDiskRatio = tmpTotal > 0
-      ? parseFloat(((tmpDisk / tmpTotal) * 100).toFixed(2))
-      : 0;
+    const tmpDiskRatio = tmpTotal > 0 ? parseFloat(((tmpDisk / tmpTotal) * 100).toFixed(2)) : 0;
 
-    // ── 4. Ratio full scan vs índice ─────────────────────────────
     const rndNext = statusMap['Handler_read_rnd_next'] || 0;
     const readKey = statusMap['Handler_read_key']       || 1;
     const fullScanRatio = (rndNext + readKey) > 0
       ? parseFloat(((rndNext / (rndNext + readKey)) * 100).toFixed(2))
       : 0;
 
-    // ── 5. Queries lentas vía performance_schema ──────────────────
     let slowQueries = [];
     try {
       const [rows] = await db.execute(`
@@ -402,12 +379,8 @@ router.get('/performance', authMiddleware, adminOnly, async (req, res) => {
         first_seen:      r.first_seen     || r.FIRST_SEEN,
         last_seen:       r.last_seen      || r.LAST_SEEN,
       }));
-    } catch {
-      // performance_schema puede no estar habilitado en Aiven free tier
-      slowQueries = [];
-    }
+    } catch { slowQueries = []; }
 
-    // ── 6. Top tablas por I/O (performance_schema) ───────────────
     let tableIO = [];
     try {
       const [rows] = await db.execute(`
@@ -432,24 +405,18 @@ router.get('/performance', authMiddleware, adminOnly, async (req, res) => {
         read_sec:   parseFloat(r.read_sec  || r.READ_SEC  || 0),
         write_sec:  parseFloat(r.write_sec || r.WRITE_SEC || 0),
       }));
-    } catch {
-      tableIO = [];
-    }
+    } catch { tableIO = []; }
 
-    // ── 7. Innodb locks y waits ───────────────────────────────────
-    let lockInfo = { waits: 0, avg_wait_ms: 0, lock_immediate: 0, lock_waited: 0 };
-    try {
-      lockInfo = {
-        waits:          statusMap['Innodb_row_lock_waits']   || 0,
-        avg_wait_ms:    statusMap['Innodb_row_lock_time_avg'] || 0,
-        lock_immediate: statusMap['Table_locks_immediate']    || 0,
-        lock_waited:    statusMap['Table_locks_waited']       || 0,
-      };
-    } catch { /* ok */ }
+    const lockInfo = {
+      waits:          statusMap['Innodb_row_lock_waits']    || 0,
+      avg_wait_ms:    statusMap['Innodb_row_lock_time_avg'] || 0,
+      lock_immediate: statusMap['Table_locks_immediate']    || 0,
+      lock_waited:    statusMap['Table_locks_waited']       || 0,
+    };
 
     res.json({
       buffer: {
-        hit_rate_pct:   bufferHitRate,
+        hit_rate_pct:    bufferHitRate,
         reads_from_disk: reads,
         total_requests:  requests,
         pages_data:      statusMap['Innodb_buffer_pool_pages_data']  || 0,
@@ -462,53 +429,38 @@ router.get('/performance', authMiddleware, adminOnly, async (req, res) => {
         rows_deleted:  statusMap['Innodb_rows_deleted']  || 0,
       },
       efficiency: {
-        tmp_disk_ratio_pct: tmpDiskRatio,
+        tmp_disk_ratio_pct:  tmpDiskRatio,
         full_scan_ratio_pct: fullScanRatio,
-        sort_merge_passes:   statusMap['Sort_merge_passes']    || 0,
-        select_full_join:    statusMap['Select_full_join']     || 0,
-        select_scan:         statusMap['Select_scan']          || 0,
+        sort_merge_passes:   statusMap['Sort_merge_passes'] || 0,
+        select_full_join:    statusMap['Select_full_join']  || 0,
+        select_scan:         statusMap['Select_scan']       || 0,
       },
-      locks: lockInfo,
+      locks:       lockInfo,
       slow_queries: slowQueries,
       table_io:     tableIO,
     });
-
   } catch (err) {
     console.error('Error en monitor performance:', err);
     res.status(500).json({ error: 'Error obteniendo métricas de rendimiento' });
   }
 });
 
-
-// ============================================================
+// ================================
 // 🔄 GET /api/admin/monitor/processes
-//    Procesos y transacciones activos en la BD:
-//    - PROCESSLIST (queries en ejecución ahora)
-//    - Transacciones activas (InnoDB)
-//    - Tabla de locks actuales
-// ============================================================
+// ================================
 router.get('/processes', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    // ── 1. Procesos activos (INFORMATION_SCHEMA) ──────────────────
     let processes = [];
     try {
       const [rows] = await db.execute(`
-        SELECT
-          ID         AS id,
-          USER       AS db_user,
-          HOST       AS host,
-          DB         AS db_name,
-          COMMAND    AS command,
-          TIME       AS time_sec,
-          STATE      AS state,
-          LEFT(INFO, 200) AS query_preview
+        SELECT ID AS id, USER AS db_user, HOST AS host, DB AS db_name,
+               COMMAND AS command, TIME AS time_sec, STATE AS state,
+               LEFT(INFO, 200) AS query_preview
         FROM information_schema.PROCESSLIST
-        WHERE COMMAND != 'Sleep'
-           OR TIME > 5
-        ORDER BY TIME DESC
-        LIMIT 30
+        WHERE COMMAND != 'Sleep' OR TIME > 5
+        ORDER BY TIME DESC LIMIT 30
       `);
       processes = rows.map(r => ({
         id:            r.id            || r.ID,
@@ -522,67 +474,50 @@ router.get('/processes', authMiddleware, adminOnly, async (req, res) => {
       }));
     } catch { processes = []; }
 
-    // ── 2. Transacciones activas (InnoDB) ─────────────────────────
     let transactions = [];
     try {
       const [rows] = await db.execute(`
-        SELECT
-          trx_id                            AS trx_id,
-          trx_state                         AS state,
-          trx_started                       AS started,
-          TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS duration_sec,
-          trx_rows_locked                   AS rows_locked,
-          trx_rows_modified                 AS rows_modified,
-          trx_tables_in_use                 AS tables_in_use,
-          trx_tables_locked                 AS tables_locked,
-          trx_query                         AS current_query
-        FROM information_schema.INNODB_TRX
-        ORDER BY trx_started ASC
-        LIMIT 20
+        SELECT trx_id, trx_state AS state, trx_started AS started,
+               TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS duration_sec,
+               trx_rows_locked AS rows_locked, trx_rows_modified AS rows_modified,
+               trx_tables_in_use AS tables_in_use, trx_tables_locked AS tables_locked,
+               trx_query AS current_query
+        FROM information_schema.INNODB_TRX ORDER BY trx_started ASC LIMIT 20
       `);
       transactions = rows.map(r => ({
         trx_id:        r.trx_id        || r.TRX_ID        || '?',
         state:         r.state         || r.STATE         || '?',
         started:       r.started       || r.STARTED,
-        duration_sec:  parseInt(r.duration_sec || r.DURATION_SEC || 0),
-        rows_locked:   parseInt(r.rows_locked  || r.ROWS_LOCKED  || 0),
-        rows_modified: parseInt(r.rows_modified|| r.ROWS_MODIFIED|| 0),
-        tables_in_use: parseInt(r.tables_in_use|| r.TABLES_IN_USE|| 0),
-        tables_locked: parseInt(r.tables_locked|| r.TABLES_LOCKED|| 0),
-        current_query: r.current_query  || r.CURRENT_QUERY || null,
+        duration_sec:  parseInt(r.duration_sec || 0),
+        rows_locked:   parseInt(r.rows_locked  || 0),
+        rows_modified: parseInt(r.rows_modified|| 0),
+        tables_in_use: parseInt(r.tables_in_use|| 0),
+        tables_locked: parseInt(r.tables_locked|| 0),
+        current_query: r.current_query  || null,
       }));
     } catch { transactions = []; }
 
-    // ── 3. Locks activos (InnoDB) ─────────────────────────────────
     let locks = [];
     try {
-      // MySQL 8.0+: performance_schema.data_locks
       const [rows] = await db.execute(`
-        SELECT
-          ENGINE_LOCK_ID     AS lock_id,
-          ENGINE_TRANSACTION_ID AS trx_id,
-          OBJECT_SCHEMA      AS db_name,
-          OBJECT_NAME        AS table_name,
-          LOCK_TYPE          AS lock_type,
-          LOCK_MODE          AS lock_mode,
-          LOCK_STATUS        AS lock_status,
-          LOCK_DATA          AS lock_data
+        SELECT ENGINE_LOCK_ID AS lock_id, ENGINE_TRANSACTION_ID AS trx_id,
+               OBJECT_SCHEMA AS db_name, OBJECT_NAME AS table_name,
+               LOCK_TYPE AS lock_type, LOCK_MODE AS lock_mode,
+               LOCK_STATUS AS lock_status, LOCK_DATA AS lock_data
         FROM performance_schema.data_locks
-        WHERE OBJECT_SCHEMA = DATABASE()
-        LIMIT 30
+        WHERE OBJECT_SCHEMA = DATABASE() LIMIT 30
       `);
       locks = rows.map(r => ({
-        lock_id:     r.lock_id     || r.LOCK_ID     || '?',
-        trx_id:      r.trx_id      || r.TRX_ID,
-        table_name:  r.table_name  || r.TABLE_NAME  || '?',
-        lock_type:   r.lock_type   || r.LOCK_TYPE   || '?',
-        lock_mode:   r.lock_mode   || r.LOCK_MODE   || '?',
-        lock_status: r.lock_status || r.LOCK_STATUS || '?',
-        lock_data:   r.lock_data   || r.LOCK_DATA   || null,
+        lock_id:     r.lock_id     || '?',
+        trx_id:      r.trx_id,
+        table_name:  r.table_name  || '?',
+        lock_type:   r.lock_type   || '?',
+        lock_mode:   r.lock_mode   || '?',
+        lock_status: r.lock_status || '?',
+        lock_data:   r.lock_data   || null,
       }));
     } catch {
       try {
-        // Fallback MySQL 5.7: information_schema.INNODB_LOCKS
         const [rows] = await db.execute(`
           SELECT lock_id, lock_trx_id AS trx_id, lock_table AS table_name,
                  lock_type, lock_mode, 'GRANTED' AS lock_status, lock_data
@@ -592,7 +527,6 @@ router.get('/processes', authMiddleware, adminOnly, async (req, res) => {
       } catch { locks = []; }
     }
 
-    // ── 4. Resumen de estados de procesos ─────────────────────────
     const stateSummary = {};
     for (const p of processes) {
       const s = p.state || p.command || 'unknown';
@@ -611,10 +545,172 @@ router.get('/processes', authMiddleware, adminOnly, async (req, res) => {
         state_summary:      stateSummary,
       },
     });
-
   } catch (err) {
     console.error('Error en monitor processes:', err);
     res.status(500).json({ error: 'Error obteniendo procesos activos' });
+  }
+});
+
+// ================================
+// 🔧 GET /api/admin/monitor/maintenance
+// Salud de tablas: fragmentación (data_free), índices y selectividad
+// ================================
+router.get('/maintenance', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+
+    const [tableHealth] = await db.execute(`
+      SELECT
+        table_name                                              AS tname,
+        engine                                                  AS engine,
+        table_rows                                              AS est_rows,
+        ROUND(data_length   / 1024, 2)                          AS data_kb,
+        ROUND(index_length  / 1024, 2)                          AS index_kb,
+        ROUND(data_free     / 1024, 2)                          AS free_kb,
+        ROUND((data_length + index_length) / 1024, 2)           AS total_kb,
+        ROUND(
+          IF(data_length > 0, (data_free / data_length) * 100, 0), 2
+        )                                                        AS frag_pct,
+        create_time                                              AS created_at,
+        update_time                                              AS updated_at,
+        table_collation                                          AS collation
+      FROM information_schema.tables
+      WHERE table_schema = DATABASE()
+        AND table_type   = 'BASE TABLE'
+      ORDER BY frag_pct DESC, (data_length + index_length) DESC
+    `);
+
+    const [tableList] = await db.execute(`
+      SELECT table_name AS tname
+      FROM information_schema.tables
+      WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
+    `);
+
+    const indexHealth = [];
+    for (const t of tableList) {
+      const tname = t.tname || t.TNAME || t.table_name || t.TABLE_NAME;
+      if (!tname) continue;
+      try {
+        const [idxRows] = await db.execute(`SHOW INDEX FROM \`${tname}\``);
+        for (const r of idxRows) {
+          const keyName     = r.Key_name    || r.KEY_NAME    || r.key_name    || '';
+          const colName     = r.Column_name || r.COLUMN_NAME || r.column_name || '';
+          const cardinality = parseInt(r.Cardinality || r.CARDINALITY || r.cardinality || 0);
+          const nonUnique   = r.Non_unique  ?? r.NON_UNIQUE  ?? r.non_unique  ?? 1;
+          const idxType     = r.Index_type  || r.INDEX_TYPE  || r.index_type  || 'BTREE';
+
+          const tableRow  = tableHealth.find(th =>
+            (th.tname || th.TNAME || '').toLowerCase() === tname.toLowerCase()
+          );
+          const estRows   = parseInt(tableRow?.est_rows || tableRow?.EST_ROWS || 1);
+          const selectivity = estRows > 0 ? Math.min((cardinality / estRows) * 100, 100) : null;
+
+          indexHealth.push({
+            table_name:      tname,
+            key_name:        keyName,
+            column_name:     colName,
+            is_primary:      keyName === 'PRIMARY',
+            is_unique:       nonUnique === 0 || nonUnique === '0',
+            index_type:      idxType,
+            cardinality,
+            est_rows:        estRows,
+            selectivity_pct: selectivity !== null ? parseFloat(selectivity.toFixed(2)) : null,
+          });
+        }
+      } catch { }
+    }
+
+    const highFrag       = tableHealth.filter(t => parseFloat(t.frag_pct || t.FRAG_PCT || 0) > 20);
+    const lowSelectivity = indexHealth.filter(
+      i => !i.is_primary && i.selectivity_pct !== null && i.selectivity_pct < 10 && i.cardinality > 0
+    );
+
+    const totalFreeKB   = tableHealth.reduce((a, t) => a + parseFloat(t.free_kb  || t.FREE_KB  || 0), 0);
+    const totalDataKB   = tableHealth.reduce((a, t) => a + parseFloat(t.data_kb  || t.DATA_KB  || 0), 0);
+    const globalFragPct = totalDataKB > 0 ? parseFloat(((totalFreeKB / totalDataKB) * 100).toFixed(2)) : 0;
+
+    res.json({
+      summary: {
+        total_tables:        tableHealth.length,
+        high_frag_tables:    highFrag.length,
+        low_selectivity_idx: lowSelectivity.length,
+        total_free_kb:       parseFloat(totalFreeKB.toFixed(2)),
+        global_frag_pct:     globalFragPct,
+      },
+      table_health: tableHealth.map(t => ({
+        name:       t.tname      || t.TNAME      || '?',
+        engine:     t.engine     || t.ENGINE     || 'InnoDB',
+        est_rows:   parseInt(t.est_rows   || t.EST_ROWS   || 0),
+        data_kb:    parseFloat(t.data_kb  || t.DATA_KB    || 0),
+        index_kb:   parseFloat(t.index_kb || t.INDEX_KB   || 0),
+        free_kb:    parseFloat(t.free_kb  || t.FREE_KB    || 0),
+        total_kb:   parseFloat(t.total_kb || t.TOTAL_KB   || 0),
+        frag_pct:   parseFloat(t.frag_pct || t.FRAG_PCT   || 0),
+        updated_at: t.updated_at || t.UPDATED_AT,
+        collation:  t.collation  || t.COLLATION  || '—',
+        status:     parseFloat(t.frag_pct || t.FRAG_PCT || 0) > 30 ? 'critical'
+                  : parseFloat(t.frag_pct || t.FRAG_PCT || 0) > 10 ? 'warn'
+                  : 'ok',
+      })),
+      index_health:    indexHealth,
+      high_frag:       highFrag,
+      low_selectivity: lowSelectivity,
+    });
+  } catch (err) {
+    console.error('Error en monitor maintenance:', err);
+    res.status(500).json({ error: 'Error obteniendo datos de mantenimiento' });
+  }
+});
+
+// ================================
+// ⚙️ POST /api/admin/monitor/optimize
+// Ejecuta ANALYZE TABLE + OPTIMIZE TABLE
+// Body: { tables: ['t1','t2'] }  (opcional)
+// ================================
+router.post('/optimize', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+    const { tables: targetTables } = req.body || {};
+
+    let tablesToOptimize = [];
+    if (targetTables && targetTables.length > 0) {
+      tablesToOptimize = targetTables;
+    } else {
+      const [rows] = await db.execute(`
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE()
+          AND table_type   = 'BASE TABLE'
+          AND data_free    > 0
+        ORDER BY (data_free / GREATEST(data_length, 1)) DESC
+        LIMIT 20
+      `);
+      tablesToOptimize = rows.map(r => r.table_name || r.TABLE_NAME);
+    }
+
+    const results   = [];
+    const startTime = Date.now();
+
+    for (const tname of tablesToOptimize) {
+      const t0 = Date.now();
+      try {
+        await db.execute(`ANALYZE TABLE \`${tname}\``);
+        await db.execute(`OPTIMIZE TABLE \`${tname}\``);
+        results.push({ table: tname, status: 'ok', ms: Date.now() - t0 });
+      } catch (e) {
+        results.push({ table: tname, status: 'error', error: e.message, ms: Date.now() - t0 });
+      }
+    }
+
+    const totalMs = Date.now() - startTime;
+    const ok      = results.filter(r => r.status === 'ok').length;
+
+    console.log(`🔧 OPTIMIZE por ${req.user?.usuario}: ${ok}/${results.length} tablas en ${totalMs}ms`);
+
+    res.json({ ok, total: results.length, total_ms: totalMs, results });
+  } catch (err) {
+    console.error('Error en optimize:', err);
+    res.status(500).json({ error: 'Error ejecutando optimización' });
   }
 });
 
