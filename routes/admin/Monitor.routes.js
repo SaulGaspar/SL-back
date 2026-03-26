@@ -667,25 +667,42 @@ router.get('/maintenance', authMiddleware, adminOnly, async (req, res) => {
 // Ejecuta ANALYZE TABLE + OPTIMIZE TABLE
 // Body: { tables: ['t1','t2'] }  (opcional)
 // ================================
+// ================================
+// ⚙️ POST /api/admin/monitor/optimize
+// Ejecuta ANALYZE TABLE + OPTIMIZE TABLE en TODAS las tablas InnoDB.
+// En Vercel (serverless), InnoDB puede tener fragmentación lógica
+// aunque data_free = 0, por eso se optimizan todas.
+// Body: { tables: ['t1','t2'], optimizeAll: true }  (opcionales)
+// ================================
 router.post('/optimize', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
-    const { tables: targetTables } = req.body || {};
+    const { tables: targetTables, optimizeAll } = req.body || {};
 
     let tablesToOptimize = [];
+
     if (targetTables && targetTables.length > 0) {
+      // Si se pasan tablas específicas, usarlas
       tablesToOptimize = targetTables;
     } else {
+      // Siempre optimizar TODAS las tablas InnoDB (no solo las de data_free > 0)
+      // Razón: en entornos serverless la fragmentación lógica no siempre
+      // se refleja en data_free, pero ANALYZE actualiza estadísticas del
+      // optimizador y OPTIMIZE reconstruye índices de todas formas.
       const [rows] = await db.execute(`
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = DATABASE()
           AND table_type   = 'BASE TABLE'
-          AND data_free    > 0
-        ORDER BY (data_free / GREATEST(data_length, 1)) DESC
-        LIMIT 20
+          AND engine       = 'InnoDB'
+        ORDER BY (data_length + index_length) DESC
+        LIMIT 30
       `);
       tablesToOptimize = rows.map(r => r.table_name || r.TABLE_NAME);
+    }
+
+    if (tablesToOptimize.length === 0) {
+      return res.json({ ok: 0, total: 0, total_ms: 0, results: [], message: 'No hay tablas InnoDB para optimizar' });
     }
 
     const results   = [];
