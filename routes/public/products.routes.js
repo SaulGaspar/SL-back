@@ -75,13 +75,10 @@ router.get('/marcas', async (req, res) => {
   }
 });
 
-// ================================
-// 📉 GET /api/products/prediccion-publica
-// Algoritmo de decrecimiento lineal: T* = U₀ / r
-// Endpoint público — sin autenticación requerida
-// ⚠️  DEBE ir ANTES de /:id/images para que Express
-//     no interprete "prediccion-publica" como un :id
-// ================================
+// ⚠️ =====================================================================
+// 📉 GET /api/products/prediccion-publica — RUTA FIJA, DEBE IR AQUÍ
+// ⚠️ ANTES de GET /:id para que Express no lo interprete como parámetro
+// =====================================================================
 router.get('/prediccion-publica', async (req, res) => {
   try {
     const db = await getDB();
@@ -157,7 +154,7 @@ router.get('/prediccion-publica', async (req, res) => {
 
 // ================================
 // 🖼️ GET /api/products/:id/images  — público, sin auth
-// ⚠️  SIEMPRE después de todas las rutas con nombre fijo
+// ⚠️  DESPUÉS de todas las rutas con nombre fijo
 // ================================
 router.get('/:id/images', async (req, res) => {
   try {
@@ -172,6 +169,41 @@ router.get('/:id/images', async (req, res) => {
   } catch (err) {
     console.error('Error obteniendo imágenes:', err);
     res.status(500).json({ error: 'Error obteniendo imágenes' });
+  }
+});
+
+// ================================
+// ⚠️ GET /api/products/:id — RUTA DINÁMICA, SIEMPRE AL FINAL
+// ================================
+router.get('/:id', async (req, res) => {
+  try {
+    const db = await getDB();
+    const [product] = await db.execute(`
+      SELECT 
+        p.id, p.nombre, p.marca, p.descripcion, p.precio,
+        p.categoria, p.imagen, p.talla, p.colores,
+        COALESCE(SUM(i.stock), 0) AS stock_total
+      FROM products p
+      LEFT JOIN inventory i ON i.product_id = p.id
+      WHERE p.id = ? AND p.activo = 1
+      GROUP BY p.id
+    `, [req.params.id]);
+
+    if (!product || product.length === 0) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+
+    const [images] = await db.execute(`
+      SELECT id, url, orden
+      FROM product_images
+      WHERE product_id = ?
+      ORDER BY orden ASC
+    `, [req.params.id]);
+
+    res.json({ ...product[0], images });
+  } catch (err) {
+    console.error('Error obteniendo producto:', err);
+    res.status(500).json({ error: 'Error obteniendo producto' });
   }
 });
 
