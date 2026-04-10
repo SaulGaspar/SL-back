@@ -134,14 +134,17 @@ router.get('/prediccion-publica', async (req, res) => {
       }
 
       return {
-        product_id:       row.product_id,
-        branch_id:        row.branch_id,
-        stock_actual:     row.stock_actual,
-        ventas_periodo:   Number(row.ventas_periodo),
-        tasa_diaria:      parseFloat(r.toFixed(4)),
-        dias_restantes,                            // ✅ decimal, ej: 0.208 = 5 horas
-        fecha_agotamiento,
-        alerta,
+      product_id:       row.product_id,
+      branch_id:        row.branch_id,
+      producto:         row.producto,       // ← AGREGAR
+      categoria:        row.categoria,      // ← AGREGAR
+      sucursal:         row.sucursal,       // ← AGREGAR
+      stock_actual:     row.stock_actual,
+      ventas_periodo:   Number(row.ventas_periodo),
+      tasa_diaria:      parseFloat(r.toFixed(4)),
+      dias_restantes,
+      fecha_agotamiento,
+      alerta,
       };
     });
 

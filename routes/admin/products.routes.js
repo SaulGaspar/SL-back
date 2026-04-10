@@ -113,109 +113,6 @@ router.get('/marcas', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ══════════════════════════════════════════════════════════════
-// 📊 GET /api/admin/products/prediccion-publica
-// PREDICCIÓN DE AGOTAMIENTO - INCLUYE NOMBRE DEL PRODUCTO
-// ⚠️ RUTA FIJA - DEBE IR ANTES DE /:id
-// ══════════════════════════════════════════════════════════════
-router.get('/prediccion-publica', authMiddleware, adminOnly, async (req, res) => {
-  try {
-    const db = await getDB();
-
-    const [results] = await db.execute(`
-      SELECT
-        p.id                    AS product_id,
-        p.nombre                AS producto,
-        p.categoria,
-        i.branch_id             AS branch_id,
-        b.nombre                AS sucursal,
-        i.stock                 AS stock_actual,
-
-        -- Ventas de los últimos 30 días
-        COALESCE(
-          (SELECT SUM(oi.cantidad)
-           FROM order_items oi
-           JOIN orders o ON o.id = oi.order_id
-           WHERE oi.product_id = p.id
-           AND DATE(o.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-           AND o.status != 'cancelado'),
-          0
-        ) AS ventas_periodo,
-
-        -- Alerta de stock
-        CASE
-          WHEN i.stock = 0 THEN 'agotado'
-          WHEN COALESCE(
-            (SELECT SUM(oi.cantidad)
-             FROM order_items oi
-             JOIN orders o ON o.id = oi.order_id
-             WHERE oi.product_id = p.id
-             AND DATE(o.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-             AND o.status != 'cancelado'),
-            0
-          ) = 0 THEN 'sin_movimiento'
-          WHEN (i.stock / NULLIF((
-            SELECT SUM(oi.cantidad)
-            FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id
-            WHERE oi.product_id = p.id
-            AND DATE(o.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-            AND o.status != 'cancelado'
-          ) / 30, 0)) <= 7  THEN 'critico'
-          WHEN (i.stock / NULLIF((
-            SELECT SUM(oi.cantidad)
-            FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id
-            WHERE oi.product_id = p.id
-            AND DATE(o.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-            AND o.status != 'cancelado'
-          ) / 30, 0)) <= 15 THEN 'bajo'
-          WHEN (i.stock / NULLIF((
-            SELECT SUM(oi.cantidad)
-            FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id
-            WHERE oi.product_id = p.id
-            AND DATE(o.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-            AND o.status != 'cancelado'
-          ) / 30, 0)) <= 30 THEN 'moderado'
-          ELSE 'ok'
-        END AS alerta,
-
-        -- Días restantes (decimal)
-        CASE
-          WHEN COALESCE(
-            (SELECT SUM(oi.cantidad)
-             FROM order_items oi
-             JOIN orders o ON o.id = oi.order_id
-             WHERE oi.product_id = p.id
-             AND DATE(o.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-             AND o.status != 'cancelado'),
-            0
-          ) = 0 THEN NULL
-          ELSE (i.stock / NULLIF((
-            SELECT SUM(oi.cantidad)
-            FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id
-            WHERE oi.product_id = p.id
-            AND DATE(o.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-            AND o.status != 'cancelado'
-          ) / 30, 0))
-        END AS dias_restantes
-
-      FROM products p
-      JOIN inventory i ON i.product_id = p.id
-      LEFT JOIN branches b ON b.id = i.branch_id
-      WHERE p.activo = 1
-      ORDER BY p.nombre ASC, i.branch_id ASC
-    `);
-
-    res.json(results || []);
-  } catch (err) {
-    console.error('Error prediccion-publica (admin):', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ================================
 // GET /api/admin/products
 // ================================
@@ -234,86 +131,41 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
 });
 
 // ================================
-// GET /api/admin/products/images/reorder  <-- fija, antes de /:id
+// GET /api/admin/products/:id
+// ⚠️  SIEMPRE después de todas las rutas con nombre fijo
 // ================================
-
-// ================================
-// DELETE /api/admin/products/images/:imageId
-// ⚠️ RUTA FIJA - ANTES DE /:id
-// ================================
-router.delete('/images/:imageId', authMiddleware, adminOnly, async (req, res) => {
+router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    const [exists] = await db.execute(
-      'SELECT id, product_id, orden FROM product_images WHERE id = ?',
-      [req.params.imageId]
+    const [rows] = await db.execute(
+      'SELECT * FROM v_productos_stock WHERE id = ?',
+      [req.params.id]
     );
-    if (exists.length === 0)
-      return res.status(404).json({ error: 'Imagen no encontrada' });
+    if (rows.length === 0)
+      return res.status(404).json({ error: 'Producto no encontrado' });
 
-    const { product_id, orden } = exists[0];
-    await db.execute('DELETE FROM product_images WHERE id = ?', [req.params.imageId]);
+    const [inventory] = await db.execute(`
+      SELECT id, stock, min_stock, branch_id, sucursal, estado, valor_stock
+      FROM v_inventario_completo
+      WHERE product_id = ?
+      ORDER BY sucursal
+    `, [req.params.id]);
 
-    if (orden === 0) {
-      const [[next]] = await db.execute(
-        'SELECT url FROM product_images WHERE product_id = ? ORDER BY orden ASC LIMIT 1',
-        [product_id]
-      );
-      await db.execute(
-        'UPDATE products SET imagen = ?, updatedAt = NOW() WHERE id = ?',
-        [next?.url || null, product_id]
-      );
-    }
+    const [images] = await db.execute(`
+      SELECT id, url, orden FROM product_images
+      WHERE product_id = ? ORDER BY orden ASC
+    `, [req.params.id]);
 
-    console.log(`🗑️ Imagen ${sanitizeLog(req.params.imageId)} eliminada por ${sanitizeLog(req.user.usuario)}`);
-    res.json({ message: 'Imagen eliminada correctamente' });
+    res.json({ product: rows[0], inventory, images });
   } catch (err) {
-    console.error('Error eliminando imagen:', err);
-    res.status(500).json({ error: 'Error eliminando imagen' });
-  }
-});
-
-// ================================
-// PATCH /api/admin/products/images/reorder
-// ⚠️ RUTA FIJA - ANTES DE /:id
-// ================================
-router.patch('/images/reorder', authMiddleware, adminOnly, async (req, res) => {
-  const { product_id, images } = req.body;
-  if (!product_id || !Array.isArray(images))
-    return res.status(400).json({ error: 'product_id e images[] requeridos' });
-
-  try {
-    const db = await getDB();
-
-    for (const img of images) {
-      await db.execute(
-        'UPDATE product_images SET orden = ? WHERE id = ? AND product_id = ?',
-        [img.orden, img.id, product_id]
-      );
-    }
-
-    const [[first]] = await db.execute(
-      'SELECT url FROM product_images WHERE product_id = ? ORDER BY orden ASC LIMIT 1',
-      [product_id]
-    );
-    if (first) {
-      await db.execute(
-        'UPDATE products SET imagen = ?, updatedAt = NOW() WHERE id = ?',
-        [first.url, product_id]
-      );
-    }
-
-    res.json({ message: 'Imágenes reordenadas correctamente' });
-  } catch (err) {
-    console.error('Error reordenando imágenes:', err);
-    res.status(500).json({ error: 'Error reordenando imágenes' });
+    console.error('Error obteniendo producto:', err);
+    res.status(500).json({ error: 'Error obteniendo producto' });
   }
 });
 
 // ================================
 // GET /api/admin/products/:id/images
-// ⚠️ RUTA FIJA - ANTES DE /:id genérico
 // ================================
 router.get('/:id/images', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -333,7 +185,6 @@ router.get('/:id/images', authMiddleware, adminOnly, async (req, res) => {
 
 // ================================
 // POST /api/admin/products/:id/images
-// ⚠️ RUTA FIJA - ANTES DE /:id genérico
 // ================================
 router.post('/:id/images', authMiddleware, adminOnly, async (req, res) => {
   const { url, orden } = req.body;
@@ -376,36 +227,74 @@ router.post('/:id/images', authMiddleware, adminOnly, async (req, res) => {
 });
 
 // ================================
-// GET /api/admin/products/:id
-// ⚠️ RUTA DINÁMICA - SIEMPRE AL FINAL DE LOS GETs
+// DELETE /api/admin/products/images/:imageId
 // ================================
-router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
+router.delete('/images/:imageId', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    const [rows] = await db.execute(
-      'SELECT * FROM v_productos_stock WHERE id = ?',
-      [req.params.id]
+    const [exists] = await db.execute(
+      'SELECT id, product_id, orden FROM product_images WHERE id = ?',
+      [req.params.imageId]
     );
-    if (rows.length === 0)
-      return res.status(404).json({ error: 'Producto no encontrado' });
+    if (exists.length === 0)
+      return res.status(404).json({ error: 'Imagen no encontrada' });
 
-    const [inventory] = await db.execute(`
-      SELECT id, stock, min_stock, branch_id, sucursal, estado, valor_stock
-      FROM v_inventario_completo
-      WHERE product_id = ?
-      ORDER BY sucursal
-    `, [req.params.id]);
+    const { product_id, orden } = exists[0];
+    await db.execute('DELETE FROM product_images WHERE id = ?', [req.params.imageId]);
 
-    const [images] = await db.execute(`
-      SELECT id, url, orden FROM product_images
-      WHERE product_id = ? ORDER BY orden ASC
-    `, [req.params.id]);
+    if (orden === 0) {
+      const [[next]] = await db.execute(
+        'SELECT url FROM product_images WHERE product_id = ? ORDER BY orden ASC LIMIT 1',
+        [product_id]
+      );
+      await db.execute(
+        'UPDATE products SET imagen = ?, updatedAt = NOW() WHERE id = ?',
+        [next?.url || null, product_id]
+      );
+    }
 
-    res.json({ product: rows[0], inventory, images });
+    console.log(`🗑️ Imagen ${sanitizeLog(req.params.imageId)} eliminada por ${sanitizeLog(req.user.usuario)}`);
+    res.json({ message: 'Imagen eliminada correctamente' });
   } catch (err) {
-    console.error('Error obteniendo producto:', err);
-    res.status(500).json({ error: 'Error obteniendo producto' });
+    console.error('Error eliminando imagen:', err);
+    res.status(500).json({ error: 'Error eliminando imagen' });
+  }
+});
+
+// ================================
+// PATCH /api/admin/products/images/reorder
+// ================================
+router.patch('/images/reorder', authMiddleware, adminOnly, async (req, res) => {
+  const { product_id, images } = req.body;
+  if (!product_id || !Array.isArray(images))
+    return res.status(400).json({ error: 'product_id e images[] requeridos' });
+
+  try {
+    const db = await getDB();
+
+    for (const img of images) {
+      await db.execute(
+        'UPDATE product_images SET orden = ? WHERE id = ? AND product_id = ?',
+        [img.orden, img.id, product_id]
+      );
+    }
+
+    const [[first]] = await db.execute(
+      'SELECT url FROM product_images WHERE product_id = ? ORDER BY orden ASC LIMIT 1',
+      [product_id]
+    );
+    if (first) {
+      await db.execute(
+        'UPDATE products SET imagen = ?, updatedAt = NOW() WHERE id = ?',
+        [first.url, product_id]
+      );
+    }
+
+    res.json({ message: 'Imágenes reordenadas correctamente' });
+  } catch (err) {
+    console.error('Error reordenando imágenes:', err);
+    res.status(500).json({ error: 'Error reordenando imágenes' });
   }
 });
 
