@@ -12,6 +12,7 @@ const authRoutes     = require('./routes/public/auth.routes');
 const passwordRoutes = require('./routes/public/password.routes');
 const profileRoutes  = require('./routes/public/profile.routes');
 const publicProducts = require('./routes/public/products.routes');
+const addressRoutes  = require('./routes/public/address');        // ← NUEVO
 
 // ── Rutas admin
 const adminProducts  = require('./routes/admin/products.routes');
@@ -24,9 +25,6 @@ const backupsRoutes  = require('./routes/admin/backups.routes');
 const monitorRoutes  = require('./routes/admin/Monitor.routes');
 const reportsRoutes  = require('./routes/admin/Reports.routes');
 
-// ─────────────────────────────────────────────────────────────
-// app se declara DESPUÉS de todos los requires
-// ─────────────────────────────────────────────────────────────
 const app = express();
 app.set('trust proxy', 1);
 
@@ -65,11 +63,12 @@ app.use('/api/', generalLimiter);
 app.get('/', (req, res) => res.send('Servidor SportLike funcionando correctamente'));
 
 // RUTAS PÚBLICAS
-app.use('/auth', authRoutes);             // /auth/google, /auth/google/callback
-app.use('/api',  authRoutes);             // /api/register, /api/login, /api/verify-email
-app.use('/api',  passwordRoutes);         // /api/forgot-password, /api/reset-password
-app.use('/api',  profileRoutes);          // /api/me, /api/update-profile, /api/update-password
-app.use('/api/products', publicProducts); // /api/products, /api/products/categories
+app.use('/auth', authRoutes);
+app.use('/api',  authRoutes);
+app.use('/api',  passwordRoutes);
+app.use('/api',  profileRoutes);
+app.use('/api/products',       publicProducts);
+app.use('/api/user/addresses', addressRoutes);   // ← NUEVO
 
 // RUTAS ADMIN
 app.use('/api/admin/products',  adminProducts);
