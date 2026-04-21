@@ -56,7 +56,6 @@ router.get('/summary', authMiddleware, adminOnly, async (req, res) => {
 
 // ══════════════════════════════════════════════════
 // 📈 GET /api/admin/reports/timeline
-// Ventas día a día en el período
 // ══════════════════════════════════════════════════
 router.get('/timeline', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -90,7 +89,6 @@ router.get('/timeline', authMiddleware, adminOnly, async (req, res) => {
 
 // ══════════════════════════════════════════════════
 // 🏪 GET /api/admin/reports/by-branch
-// Desglose por sucursal
 // ══════════════════════════════════════════════════
 router.get('/by-branch', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -126,7 +124,6 @@ router.get('/by-branch', authMiddleware, adminOnly, async (req, res) => {
 
 // ══════════════════════════════════════════════════
 // 🛍️ GET /api/admin/reports/top-products
-// Productos más vendidos
 // ══════════════════════════════════════════════════
 router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -139,8 +136,6 @@ router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
     if (to)                          { where.push('o.fecha <= ?');    params.push(to); }
     if (branch && branch !== 'all')  { where.push('o.sucursal = ?'); params.push(branch); }
     const whereSQL = where.length ? 'WHERE ' + where.join(' AND ') : '';
-
-    // LIMIT interpolado directamente — mysql2 no acepta LIMIT como parámetro ?
     const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
 
     const [rows] = await db.execute(`
@@ -166,7 +161,6 @@ router.get('/top-products', authMiddleware, adminOnly, async (req, res) => {
 
 // ══════════════════════════════════════════════════
 // 🗂️ GET /api/admin/reports/by-category
-// Ventas por categoría
 // ══════════════════════════════════════════════════
 router.get('/by-category', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -203,7 +197,6 @@ router.get('/by-category', authMiddleware, adminOnly, async (req, res) => {
 
 // ══════════════════════════════════════════════════
 // 🏪 GET /api/admin/reports/branch-detail/:id
-// Detalle completo de una sucursal
 // ══════════════════════════════════════════════════
 router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -260,6 +253,166 @@ router.get('/branch-detail/:id', authMiddleware, adminOnly, async (req, res) => 
     res.json({ branch, sales: sales || {}, topProds, lowStock });
   } catch (err) {
     console.error('Error branch-detail:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// 🔮 GET /api/admin/reports/prediccion-agotamiento
+//
+// Predicción de agotamiento de inventario POR SUCURSAL usando el
+// modelo de decrecimiento exponencial: S(t) = S₀ · e^(-k·t)
+//
+// Donde:
+//   S₀ = stock actual de la sucursal para ese producto
+//   k  = ventas_semanales / S₀  (constante de decrecimiento)
+//   t  = tiempo en semanas
+//
+// Una fila por combinación producto + sucursal.
+// Filtros: branch (id de sucursal), alerta, categoria
+// ══════════════════════════════════════════════════════════════════
+router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const db = await getDB();
+    const { branch, alerta, categoria } = req.query;
+
+    // ── 1. Obtener inventario + ventas últimos 30 días, por producto·sucursal ──
+    const whereArr = [];
+    const params   = [];
+
+    if (branch && branch !== 'all') {
+      whereArr.push('i.branch_id = ?');
+      params.push(branch);
+    }
+    if (categoria) {
+      whereArr.push('p.categoria = ?');
+      params.push(categoria);
+    }
+
+    const where = whereArr.length ? 'WHERE ' + whereArr.join(' AND ') : '';
+
+    const [rows] = await db.execute(`
+      SELECT
+        p.id                                    AS product_id,
+        p.nombre                                AS producto,
+        p.categoria,
+        p.marca,
+        b.id                                    AS branch_id,
+        COALESCE(b.nombre, b.id)               AS sucursal,
+        i.stock                                 AS stock_actual,
+        COALESCE(i.min_stock, 0)               AS min_stock,
+        -- Ventas de este producto en esta sucursal en los últimos 30 días
+        COALESCE(
+          (SELECT SUM(oi2.cantidad)
+           FROM order_items oi2
+           JOIN orders o2 ON o2.id = oi2.order_id
+           WHERE oi2.product_id = p.id
+             AND o2.sucursal    = b.id
+             AND o2.status     != 'cancelado'
+             AND DATE(o2.fecha) >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+          ), 0
+        )                                       AS ventas_30d
+      FROM inventory i
+      JOIN products p  ON p.id = i.product_id
+      JOIN branches b  ON b.id = i.branch_id
+      ${where}
+      ORDER BY p.nombre ASC, b.id ASC
+    `, params);
+
+    // ── 2. Calcular modelo exponencial para cada fila ──────────────────────────
+    const SEMANAS_MES = 4.33; // 30 / 7 = 4.2857 ≈ 4.33
+
+    const resultado = rows.map(row => {
+      const S0      = Number(row.stock_actual)  || 0;
+      const v30     = Number(row.ventas_30d)    || 0;
+      const Sc      = Number(row.min_stock)     || 0;
+
+      // Tasa diaria y semanal
+      const tasa_diaria  = +(v30 / 30).toFixed(3);
+      const ventas_sem   = +(v30 / SEMANAS_MES).toFixed(2);
+
+      // Constante de decrecimiento k (sem⁻¹)
+      // k = ventas_semanales / S₀
+      // Si S₀ = 0 no tiene sentido calcular k
+      const k = S0 > 0 ? +(ventas_sem / S0).toFixed(4) : 0;
+
+      // ── Semanas hasta nivel crítico: t = -ln(Sc/S0) / k ──
+      let semanas_a_critico = null;
+      if (S0 > 0 && S0 > Sc && k > 0) {
+        semanas_a_critico = +(-Math.log(Sc / S0) / k).toFixed(2);
+      }
+
+      // ── Semanas hasta agotamiento total (S=1): t = ln(S0) / k ──
+      let semanas_agotamiento = null;
+      if (S0 > 1 && k > 0) {
+        semanas_agotamiento = +(Math.log(S0) / k).toFixed(2);
+      }
+
+      // ── Días hasta agotamiento (modelo lineal complementario) ──
+      const dias_lineales = tasa_diaria > 0 ? Math.round(S0 / tasa_diaria) : null;
+
+      // ── Determinar nivel de alerta ──
+      let alerta_nivel;
+      if (S0 === 0) {
+        alerta_nivel = 'agotado';
+      } else if (v30 === 0) {
+        alerta_nivel = 'sin_movimiento';
+      } else if (S0 <= Sc) {
+        alerta_nivel = 'critico';       // ya está en o bajo el mínimo
+      } else if (semanas_a_critico !== null && semanas_a_critico <= 2) {
+        alerta_nivel = 'critico';       // llega al mínimo en ≤ 2 semanas
+      } else if (semanas_a_critico !== null && semanas_a_critico <= 4) {
+        alerta_nivel = 'bajo';          // llega al mínimo en ≤ 4 semanas
+      } else if (semanas_a_critico !== null && semanas_a_critico <= 8) {
+        alerta_nivel = 'moderado';
+      } else {
+        alerta_nivel = 'ok';
+      }
+
+      // Proyección semanal (semanas 0, 1, 2, 4, 8, 12, 16, 20)
+      const proyeccion = k > 0
+        ? [0,1,2,4,8,12,16,20].map(t => ({
+            semana: t,
+            stock_estimado: Math.max(0, Math.round(S0 * Math.exp(-k * t)))
+          }))
+        : [];
+
+      return {
+        product_id:          row.product_id,
+        producto:            row.producto,
+        categoria:           row.categoria,
+        marca:               row.marca,
+        branch_id:           row.branch_id,
+        sucursal:            row.sucursal,
+        stock_actual:        S0,
+        min_stock:           Sc,
+        ventas_30d:          v30,
+        tasa_diaria,
+        ventas_semanales:    ventas_sem,
+        k,
+        semanas_a_critico,
+        semanas_agotamiento,
+        dias_lineales,
+        alerta:              alerta_nivel,
+        proyeccion,
+      };
+    });
+
+    // ── 3. Filtrar por alerta si se solicitó ─────────────────────────────────
+    const filtrado = alerta
+      ? resultado.filter(r => r.alerta === alerta)
+      : resultado;
+
+    // ── 4. Ordenar: critico primero, luego bajo, moderado, ok, sin_movimiento ─
+    const ORDEN = { agotado:0, critico:1, bajo:2, moderado:3, sin_movimiento:4, ok:5 };
+    filtrado.sort((a, b) =>
+      (ORDEN[a.alerta] ?? 9) - (ORDEN[b.alerta] ?? 9) ||
+      (a.semanas_a_critico ?? 9999) - (b.semanas_a_critico ?? 9999)
+    );
+
+    res.json(filtrado);
+  } catch (err) {
+    console.error('Error prediccion-agotamiento:', err);
     res.status(500).json({ error: err.message });
   }
 });
