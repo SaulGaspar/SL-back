@@ -192,6 +192,44 @@ router.get('/promotions', async (req, res) => {
   }
 });
 
+//priductos xd
+
+router.get('/products/category', async (req, res) => {
+  try {
+    const { name } = req.query;
+
+    if (!name) {
+      return res.status(400).json({
+        error: 'Categoría requerida'
+      });
+    }
+
+    const db = await getDB();
+
+    const [rows] = await db.execute(`
+      SELECT nombre
+      FROM products
+      WHERE activo = 1
+      AND LOWER(categoria) = LOWER(?)
+      ORDER BY nombre
+      LIMIT 20
+    `, [name]);
+
+    res.json({
+      category: name,
+      products: rows.map(r => r.nombre)
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: 'Error obteniendo productos'
+    });
+  }
+});
+
+
+
 // ─────────────────────────────────────────────
 // GET /api/alexa/orders/:id
 // Busca por orders.id (numérico)
