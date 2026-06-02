@@ -2,7 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const { getDB } = require('../../config/db');
 
-// ── Middleware: valida clave interna desde Alexa Lambda ──
+// ── Middleware ──
 router.use((req, res, next) => {
   const key = req.headers['x-alexa-key'];
   if (process.env.ALEXA_INTERNAL_KEY && key !== process.env.ALEXA_INTERNAL_KEY) {
@@ -12,8 +12,44 @@ router.use((req, res, next) => {
 });
 
 // ─────────────────────────────────────────────
+// Mapa: id del slot Alexa → categoria real en DB
+// ─────────────────────────────────────────────
+const CATEGORIA_MAP = {
+  calzado:      'Calzado',
+  ropa:         'Ropa',
+  accesorios:   'Accesorio',
+  accesorio:    'Accesorio',
+  balones:      'Balon',
+  balon:        'Balon',
+  equipamiento: 'Equipamiento'
+};
+
+// Mapa: id del slot producto Alexa → categoria real en DB
+const PRODUCTO_CATEGORIA_MAP = {
+  tenis:     'Calzado',
+  playeras:  'Ropa',
+  shorts:    'Ropa',
+  leggings:  'Ropa',
+  sudadera:  'Ropa',
+  balon:     'Balon',
+  mochila:   'Accesorio',
+  gorra:     'Accesorio'
+};
+
+function resolverCategoria(input) {
+  if (!input) return null;
+  const lower = input.toLowerCase().trim();
+  return CATEGORIA_MAP[lower] || null;
+}
+
+function resolverCategoriaDesdeProducto(input) {
+  if (!input) return null;
+  const lower = input.toLowerCase().trim();
+  return PRODUCTO_CATEGORIA_MAP[lower] || null;
+}
+
+// ─────────────────────────────────────────────
 // GET /api/alexa/products
-// Devuelve categorías distintas de productos activos
 // ─────────────────────────────────────────────
 router.get('/products', async (req, res) => {
   try {
@@ -26,7 +62,12 @@ router.get('/products', async (req, res) => {
         AND categoria != ''
       ORDER BY categoria
     `);
-    const categories = rows.map(r => r.categoria);
+
+    // Devuelve solo los nombres únicos sin duplicados
+    const categorias = ['Calzado', 'Ropa', 'Accesorio', 'Balon', 'Equipamiento'];
+    const fromDB = rows.map(r => r.categoria);
+    const categories = categorias.filter(c => fromDB.includes(c));
+
     res.json({ categories });
   } catch (err) {
     console.error('Alexa /products error:', err.message);
@@ -36,7 +77,6 @@ router.get('/products', async (req, res) => {
 
 // ─────────────────────────────────────────────
 // GET /api/alexa/products/category?name=calzado
-// Devuelve productos de una categoría específica
 // ─────────────────────────────────────────────
 router.get('/products/category', async (req, res) => {
   try {
@@ -46,6 +86,9 @@ router.get('/products/category', async (req, res) => {
       return res.status(400).json({ error: 'Categoría requerida' });
     }
 
+    // Resuelve el nombre del slot al nombre real en DB
+    const categoriaDB = resolverCategoria(name) || name;
+
     const db = await getDB();
     const [rows] = await db.execute(`
       SELECT nombre
@@ -54,7 +97,7 @@ router.get('/products/category', async (req, res) => {
         AND LOWER(categoria) = LOWER(?)
       ORDER BY nombre
       LIMIT 20
-    `, [name]);
+    `, [categoriaDB]);
 
     res.json({
       category: name,
@@ -68,7 +111,7 @@ router.get('/products/category', async (req, res) => {
 
 // ─────────────────────────────────────────────
 // GET /api/alexa/stock?product=tenis&size=27&color=negro
-// Devuelve disponibilidad + colores y tallas reales desde DB
+// Devuelve available + colors[] + sizes[]
 // ─────────────────────────────────────────────
 router.get('/stock', async (req, res) => {
   try {
@@ -80,15 +123,35 @@ router.get('/stock', async (req, res) => {
 
     const db = await getDB();
 
-    let sql = `
-      SELECT v.stock, p.colores, p.talla
-      FROM v_inventario_completo v
-      JOIN products p ON p.id = v.product_id
-      WHERE p.activo = 1
-        AND LOWER(p.categoria) = LOWER(?)
-        AND v.stock > 0
-    `;
-    const params = [product];
+    // Intenta resolver primero como categoría, luego como producto
+    const categoriaDB = resolverCategoria(product)
+                     || resolverCategoriaDesdeProducto(product);
+
+    let sql, params;
+
+    if (categoriaDB) {
+      // Busca por categoría (cuando el slot es "tenis", "playeras", etc.)
+      sql = `
+        SELECT v.stock, p.colores, p.talla
+        FROM v_inventario_completo v
+        JOIN products p ON p.id = v.product_id
+        WHERE p.activo = 1
+          AND LOWER(p.categoria) = LOWER(?)
+          AND v.stock > 0
+      `;
+      params = [categoriaDB];
+    } else {
+      // Busca por nombre de producto exacto o parcial
+      sql = `
+        SELECT v.stock, p.colores, p.talla
+        FROM v_inventario_completo v
+        JOIN products p ON p.id = v.product_id
+        WHERE p.activo = 1
+          AND LOWER(p.nombre) LIKE LOWER(?)
+          AND v.stock > 0
+      `;
+      params = [`%${product}%`];
+    }
 
     if (size) {
       sql += ' AND p.talla LIKE ?';
@@ -102,15 +165,15 @@ router.get('/stock', async (req, res) => {
 
     const [rows] = await db.execute(sql, params);
 
-    // Extrae colores y tallas únicos de todos los resultados
+    // Extrae colores y tallas únicos
     const coloresSet = new Set();
     const tallasSet  = new Set();
 
     rows.forEach(r => {
       if (r.colores) {
         r.colores.split(',').forEach(c => {
-          const trimmed = c.trim();
-          if (trimmed) coloresSet.add(trimmed);
+          const t = c.trim();
+          if (t) coloresSet.add(t);
         });
       }
       if (r.talla) {
@@ -133,24 +196,20 @@ router.get('/stock', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// GET /api/alexa/branches          → todas las activas
-// GET /api/alexa/branches?id=1     → una por id numérico
-// GET /api/alexa/branches?name=centro → una por nombre
+// GET /api/alexa/branches
 // ─────────────────────────────────────────────
 router.get('/branches', async (req, res) => {
   try {
     const { id, name } = req.query;
     const db = await getDB();
 
-    // Sucursal específica por id numérico
     if (id) {
       const [rows] = await db.execute(
         'SELECT id, nombre, direccion, telefono FROM branches WHERE id = ? AND activo = 1',
         [id]
       );
-      if (rows.length === 0) {
+      if (rows.length === 0)
         return res.status(404).json({ error: 'Sucursal no encontrada' });
-      }
 
       const b = rows[0];
       return res.json({
@@ -163,15 +222,13 @@ router.get('/branches', async (req, res) => {
       });
     }
 
-    // Sucursal específica por nombre parcial
     if (name) {
       const [rows] = await db.execute(
         'SELECT id, nombre, direccion, telefono FROM branches WHERE LOWER(nombre) LIKE ? AND activo = 1 LIMIT 1',
         [`%${name.toLowerCase()}%`]
       );
-      if (rows.length === 0) {
+      if (rows.length === 0)
         return res.status(404).json({ error: 'Sucursal no encontrada' });
-      }
 
       const b = rows[0];
       return res.json({
@@ -184,7 +241,6 @@ router.get('/branches', async (req, res) => {
       });
     }
 
-    // Todas las sucursales activas
     const [rows] = await db.execute(
       'SELECT id, nombre, direccion, telefono FROM branches WHERE activo = 1 ORDER BY nombre'
     );
@@ -210,7 +266,6 @@ router.get('/promotions', async (req, res) => {
   try {
     const db = await getDB();
 
-    // Verifica si existe la tabla promotions
     const [tables] = await db.execute(`
       SELECT TABLE_NAME
       FROM information_schema.TABLES
@@ -256,9 +311,8 @@ router.get('/orders/:id', async (req, res) => {
       LIMIT 1
     `, [req.params.id]);
 
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(404).json({ error: 'Pedido no encontrado' });
-    }
 
     const o = rows[0];
 
