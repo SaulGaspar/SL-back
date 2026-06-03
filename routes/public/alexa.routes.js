@@ -158,6 +158,46 @@ router.get('/branches', async (req, res) => {
 });
 
 // =============================================
+// GET /api/alexa/product/details
+// Busca un producto por nombre exacto o parcial
+// =============================================
+router.get('/product/details', async (req, res) => {
+  try {
+    const { name } = req.query;
+    if (!name) return res.status(400).json({ error: 'Se requiere ?name=producto' });
+
+    const db = await getDB();
+    const [rows] = await db.execute(`
+      SELECT nombre, precio, talla, colores, stock, categoria
+      FROM products 
+      WHERE activo = 1 
+        AND LOWER(nombre) LIKE LOWER(?)
+      LIMIT 1
+    `, [`%${name}%`]);
+
+    if (rows.length === 0) {
+      return res.json({ found: false });
+    }
+
+    const p = rows[0];
+    res.json({
+      found: true,
+      product: {
+        nombre: p.nombre,
+        precio: p.precio,
+        tallas: p.talla ? p.talla.split(',').map(t => t.trim()).filter(Boolean) : [],
+        colores: p.colores ? p.colores.split(',').map(c => c.trim()).filter(Boolean) : [],
+        stock: p.stock,
+        categoria: p.categoria
+      }
+    });
+  } catch (err) {
+    console.error('Error /product/details:', err.message);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// =============================================
 // GET /api/alexa/promotions
 // =============================================
 router.get('/promotions', async (req, res) => {
