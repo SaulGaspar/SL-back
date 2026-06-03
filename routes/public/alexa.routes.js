@@ -100,6 +100,37 @@ router.get('/stock', async (req, res) => {
   }
 });
 
+
+// =============================================
+// GET /api/alexa/products/all
+// Devuelve TODOS los productos activos (sin filtro de categoría)
+// =============================================
+router.get('/products/all', async (req, res) => {
+  try {
+    const db = await getDB();
+    const [rows] = await db.execute(`
+      SELECT nombre, precio, talla, colores, stock, categoria
+      FROM products 
+      WHERE activo = 1
+      ORDER BY categoria, nombre
+    `);
+
+    res.json({
+      products: rows.map(r => ({
+        nombre: r.nombre,
+        precio: r.precio,
+        tallas: r.talla ? r.talla.split(',').map(t => t.trim()).filter(Boolean) : [],
+        colores: r.colores ? r.colores.split(',').map(c => c.trim()).filter(Boolean) : [],
+        stock: r.stock,
+        categoria: r.categoria
+      }))
+    });
+  } catch (err) {
+    console.error('Error /products/all:', err.message);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // =============================================
 // GET /api/alexa/branches
 // =============================================
