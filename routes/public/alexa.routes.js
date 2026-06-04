@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDB } = require('../../config/db');
+
 const autenticarAlexa = (req, res, next) => {
   const key = req.headers['x-alexa-key'];
   const validKey = process.env.ALEXA_INTERNAL_KEY;
@@ -10,113 +11,186 @@ const autenticarAlexa = (req, res, next) => {
   }
   next();
 };
+
 router.use(autenticarAlexa);
+
+const normalizar = (texto) =>
+  String(texto || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+const dividirLista = (texto) =>
+  texto ? String(texto).split(',').map(t => t.trim()).filter(Boolean) : [];
+
 const mapearProducto = (r) => ({
+  id: r.id,
   nombre: r.nombre,
+  marca: r.marca || null,
+  descripcion: r.descripcion || null,
   precio: r.precio,
-  tallas: r.talla ? r.talla.split(',').map(t => t.trim()).filter(Boolean) : [],
-  colores: r.colores ? r.colores.split(',').map(c => c.trim()).filter(Boolean) : [],
-  stock: r.stock ?? null,
-  categoria: r.categoria ?? null,
+  categoria: r.categoria,
+  imagen: r.imagen || null,
+  tallas: dividirLista(r.talla),
+  colores: dividirLista(r.colores),
+  activo: Number(r.activo) === 1,
+  stock: Number(r.stock) || 0,
 });
+
 router.get('/products/all', async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute(`
-      SELECT nombre, precio, talla, colores, stock, categoria
-      FROM products
-      WHERE activo = 1
-      ORDER BY categoria ASC, nombre ASC
+      SELECT
+        p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
+        p.imagen, p.talla, p.colores, p.activo,
+        COALESCE(SUM(i.stock), 0) AS stock
+      FROM products p
+      LEFT JOIN inventory i ON i.product_id = p.id
+      WHERE p.activo = 1
+      GROUP BY p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
+        p.imagen, p.talla, p.colores, p.activo
+      ORDER BY p.categoria ASC, p.nombre ASC
     `);
     res.json({ total: rows.length, products: rows.map(mapearProducto) });
   } catch (err) {
     console.error('GET /products/all:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error interno del servidor', detail: err.message });
   }
 });
+
 router.get('/products/category', async (req, res) => {
   try {
     const { name } = req.query;
     if (!name) return res.status(400).json({ error: 'Se requiere ?name=categoría' });
+
     const db = await getDB();
     const [rows] = await db.execute(`
-      SELECT nombre, precio, talla, colores, stock, categoria
-      FROM products
-      WHERE activo = 1
-        AND LOWER(TRIM(categoria)) = LOWER(TRIM(?))
-      ORDER BY nombre ASC
-      LIMIT 30
+      SELECT
+        p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
+        p.imagen, p.talla, p.colores, p.activo,
+        COALESCE(SUM(i.stock), 0) AS stock
+      FROM products p
+      LEFT JOIN inventory i ON i.product_id = p.id
+      WHERE p.activo = 1
+        AND LOWER(TRIM(p.categoria)) = LOWER(TRIM(?))
+      GROUP BY p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
+        p.imagen, p.talla, p.colores, p.activo
+      HAVING stock > 0
+      ORDER BY p.nombre ASC
+      LIMIT 6
     `, [name]);
+
     res.json({ category: name, total: rows.length, products: rows.map(mapearProducto) });
   } catch (err) {
     console.error('GET /products/category:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error interno del servidor', detail: err.message });
   }
 });
+
 router.get('/product/details', async (req, res) => {
   try {
     const { name } = req.query;
     if (!name) return res.status(400).json({ error: 'Se requiere ?name=producto' });
+
+    const terminos = normalizar(name).split(/\s+/).filter(t => t.length > 1);
+    const whereTerminos = terminos.map(() => 'LOWER(p.nombre) LIKE LOWER(?)').join(' AND ');
+    const params = terminos.map(t => `%${t}%`);
+
     const db = await getDB();
     const [rows] = await db.execute(`
-      SELECT nombre, precio, talla, colores, stock, categoria
-      FROM products
-      WHERE activo = 1
-        AND LOWER(nombre) LIKE LOWER(?)
-      ORDER BY CHAR_LENGTH(nombre) ASC
+      SELECT
+        p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
+        p.imagen, p.talla, p.colores, p.activo,
+        COALESCE(SUM(i.stock), 0) AS stock
+      FROM products p
+      LEFT JOIN inventory i ON i.product_id = p.id
+      WHERE p.activo = 1
+        ${whereTerminos ? `AND ${whereTerminos}` : ''}
+      GROUP BY p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
+        p.imagen, p.talla, p.colores, p.activo
+      ORDER BY CHAR_LENGTH(p.nombre) ASC
       LIMIT 1
-    `, [`%${name}%`]);
+    `, params);
+
     if (!rows.length) return res.json({ found: false });
     res.json({ found: true, product: mapearProducto(rows[0]) });
   } catch (err) {
     console.error('GET /product/details:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error interno del servidor', detail: err.message });
   }
 });
+
 router.get('/stock', async (req, res) => {
   try {
-    const { product, size, color } = req.query;
+    const { product, size, color, branch_id } = req.query;
     if (!product) return res.status(400).json({ error: 'Se requiere ?product=nombre' });
+
+    const branchJoinFilter = branch_id ? 'AND i.branch_id = ?' : '';
+    const params = branch_id ? [branch_id, `%${product}%`] : [`%${product}%`];
+
     const db = await getDB();
-    let sql = `
-      SELECT nombre, precio, talla, colores, stock
-      FROM products
-      WHERE activo = 1
-        AND LOWER(nombre) LIKE LOWER(?)
-    `;
-    const params = [`%${product}%`];
-    if (size) {
-      sql += ` AND FIND_IN_SET(LOWER(?), LOWER(REPLACE(talla, ' ', '')))`;
-      params.push(size.toLowerCase());
-    }
-    if (color) {
-      sql += ` AND LOWER(colores) LIKE LOWER(?)`;
-      params.push(`%${color}%`);
-    }
-    const [rows] = await db.execute(sql, params);
-    const coloresDisponibles = new Set();
-    const tallasDisponibles = new Set();
-    let precioMinimo = null;
-    let totalStock = 0;
-    rows.forEach(r => {
-      totalStock += r.stock || 0;
-      if (r.colores) r.colores.split(',').forEach(c => coloresDisponibles.add(c.trim()));
-      if (r.talla) r.talla.split(',').forEach(t => tallasDisponibles.add(t.trim()));
-      const p = parseFloat(r.precio);
-      if (!isNaN(p) && (precioMinimo === null || p < precioMinimo)) precioMinimo = p;
+    const [rows] = await db.execute(`
+      SELECT
+        p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
+        p.imagen, p.talla, p.colores, p.activo,
+        COALESCE(SUM(i.stock), 0) AS stock
+      FROM products p
+      LEFT JOIN inventory i ON i.product_id = p.id ${branchJoinFilter}
+      WHERE p.activo = 1
+        AND LOWER(p.nombre) LIKE LOWER(?)
+      GROUP BY p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
+        p.imagen, p.talla, p.colores, p.activo
+    `, params);
+
+    const productos = rows.map(mapearProducto).filter(p => {
+      const okSize = !size || p.tallas.map(normalizar).includes(normalizar(size));
+      const okColor = !color || p.colores.map(normalizar).includes(normalizar(color));
+      return okSize && okColor;
     });
+
+    const colors = [...new Set(productos.flatMap(p => p.colores))];
+    const sizes = [...new Set(productos.flatMap(p => p.tallas))];
+    const prices = productos.map(p => Number(p.precio)).filter(Number.isFinite);
+    const totalStock = productos.reduce((sum, p) => sum + (Number(p.stock) || 0), 0);
+
     res.json({
       available: totalStock > 0,
       totalStock,
-      colors: [...coloresDisponibles],
-      sizes: [...tallasDisponibles],
-      priceFrom: precioMinimo,
+      colors,
+      sizes,
+      priceFrom: prices.length ? Math.min(...prices) : null,
     });
   } catch (err) {
     console.error('GET /stock:', err.message);
-    res.status(500).json({ error: 'Error consultando stock' });
+    res.status(500).json({ error: 'Error consultando stock', detail: err.message });
   }
 });
+
+router.get('/categories', async (req, res) => {
+  try {
+    const db = await getDB();
+    const [rows] = await db.execute(`
+      SELECT p.categoria, COUNT(DISTINCT p.id) AS total
+      FROM products p
+      LEFT JOIN inventory i ON i.product_id = p.id
+      WHERE p.activo = 1
+        AND p.categoria IS NOT NULL
+      GROUP BY p.categoria
+      HAVING COALESCE(SUM(i.stock), 0) > 0
+      ORDER BY p.categoria ASC
+    `);
+    res.json({
+      total: rows.length,
+      categories: rows.map(r => ({ name: r.categoria, count: r.total })),
+    });
+  } catch (err) {
+    console.error('GET /categories:', err.message);
+    res.status(500).json({ error: 'Error obteniendo categorías', detail: err.message });
+  }
+});
+
 router.get('/branches', async (req, res) => {
   try {
     const db = await getDB();
@@ -140,6 +214,7 @@ router.get('/branches', async (req, res) => {
     res.status(500).json({ error: 'Error obteniendo sucursales' });
   }
 });
+
 router.get('/promotions', async (req, res) => {
   try {
     const db = await getDB();
@@ -158,24 +233,5 @@ router.get('/promotions', async (req, res) => {
     res.status(500).json({ error: 'Error obteniendo promociones' });
   }
 });
-router.get('/categories', async (req, res) => {
-  try {
-    const db = await getDB();
-    const [rows] = await db.execute(`
-      SELECT DISTINCT categoria, COUNT(*) AS total
-      FROM products
-      WHERE activo = 1
-        AND categoria IS NOT NULL
-      GROUP BY categoria
-      ORDER BY categoria ASC
-    `);
-    res.json({
-      total: rows.length,
-      categories: rows.map(r => ({ name: r.categoria, count: r.total })),
-    });
-  } catch (err) {
-    console.error('GET /categories:', err.message);
-    res.status(500).json({ error: 'Error obteniendo categorías' });
-  }
-});
+
 module.exports = router;
