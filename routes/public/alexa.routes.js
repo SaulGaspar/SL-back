@@ -108,19 +108,31 @@ router.get('/product/details', async (req, res) => {
     const { name } = req.query;
     if (!name) return res.status(400).json({ error: 'Se requiere ?name=producto' });
 
-    const terminos = normalizar(name).split(/\s+/).filter(t => t.length > 1);
-    const whereTerminos = terminos.map(() => 'LOWER(p.nombre) LIKE LOWER(?)').join(' AND ');
-    const params = terminos.map(t => `%${t}%`);
-
     const db = await getDB();
-    const [rows] = await db.execute(`
+    
+    // Primero intenta búsqueda EXACTA o muy similar
+    let [rows] = await db.execute(`
       ${SELECT_PRODUCTOS}
       WHERE p.activo = 1
-        ${whereTerminos ? `AND ${whereTerminos}` : ''}
+        AND LOWER(TRIM(p.nombre)) = LOWER(TRIM(?))
       ${GROUP_PRODUCTOS}
-      ORDER BY CHAR_LENGTH(p.nombre) ASC
-      LIMIT 1
-    `, params);
+    `, [name]);
+
+    // Si no hay resultado exacto, intenta búsqueda parcial
+    if (!rows.length) {
+      const terminos = normalizar(name).split(/\s+/).filter(t => t.length > 1);
+      const whereTerminos = terminos.map(() => 'LOWER(p.nombre) LIKE LOWER(?)').join(' OR ');
+      const params = terminos.map(t => `%${t}%`);
+
+      [rows] = await db.execute(`
+        ${SELECT_PRODUCTOS}
+        WHERE p.activo = 1
+          ${whereTerminos ? `AND (${whereTerminos})` : ''}
+        ${GROUP_PRODUCTOS}
+        ORDER BY CHAR_LENGTH(p.nombre) ASC
+        LIMIT 1
+      `, params);
+    }
 
     if (!rows.length) return res.json({ found: false });
     res.json({ found: true, product: mapearProducto(rows[0]) });
@@ -201,7 +213,7 @@ router.get('/branches', async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute(`
-      SELECT nombre, direccion, telefono, horario
+      SELECT nombre, direccion, telefono, activo
       FROM branches
       WHERE activo = 1
       ORDER BY nombre ASC
@@ -212,7 +224,7 @@ router.get('/branches', async (req, res) => {
         name: b.nombre,
         address: b.direccion,
         phone: b.telefono || null,
-        schedule: b.horario || 'Lunes a sábado de 9:00 AM a 8:00 PM',
+        schedule: 'Lunes a sábado de 9:00 AM a 8:00 PM',
       })),
     });
   } catch (err) {
@@ -225,15 +237,23 @@ router.get('/promotions', async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute(`
-      SELECT description, start_date, end_date
+      SELECT nombre, descuento, fecha_inicio, fecha_fin, activo
       FROM promotions
-      WHERE active = 1
-        AND start_date <= CURDATE()
-        AND end_date >= CURDATE()
-      ORDER BY end_date ASC
+      WHERE activo = 1
+        AND fecha_inicio <= CURDATE()
+        AND fecha_fin >= CURDATE()
+      ORDER BY fecha_fin ASC
       LIMIT 5
     `);
-    res.json({ total: rows.length, promotions: rows });
+    res.json({ 
+      total: rows.length, 
+      promotions: rows.map(r => ({
+        name: r.nombre,
+        discount: r.descuento,
+        startDate: r.fecha_inicio,
+        endDate: r.fecha_fin,
+      }))
+    });
   } catch (err) {
     console.error('GET /promotions:', err.message);
     res.status(500).json({ error: 'Error obteniendo promociones' });
