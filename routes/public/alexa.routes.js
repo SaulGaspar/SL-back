@@ -53,7 +53,11 @@ const mapearProducto = (r) => ({
 const SELECT_PRODUCTOS = `
   SELECT
     p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
-    p.imagen, p.talla, p.colores, p.activo,
+    COALESCE(
+      (SELECT url FROM product_images WHERE product_id = p.id ORDER BY orden ASC, id ASC LIMIT 1),
+      p.imagen
+    ) as imagen,
+    p.talla, p.colores, p.activo,
     COALESCE(SUM(i.stock), 0) AS stock
   FROM products p
   LEFT JOIN inventory i ON i.product_id = p.id
@@ -154,7 +158,11 @@ router.get('/stock', async (req, res) => {
     const [rows] = await db.execute(`
       SELECT
         p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
-        p.imagen, p.talla, p.colores, p.activo,
+        COALESCE(
+          (SELECT url FROM product_images WHERE product_id = p.id ORDER BY orden ASC, id ASC LIMIT 1),
+          p.imagen
+        ) as imagen,
+        p.talla, p.colores, p.activo,
         COALESCE(SUM(i.stock), 0) AS stock
       FROM products p
       LEFT JOIN inventory i ON i.product_id = p.id ${branchJoinFilter}
