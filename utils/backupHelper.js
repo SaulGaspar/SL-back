@@ -1,15 +1,17 @@
-// utils/backupHelper.js
-// Lógica compartida entre el router y el scheduler de backups
-
-// ── Tablas a respaldar (en orden por dependencias FK) ────────────────────────
 const TABLAS = [
   'users',
   'branches',
+  'Token',
   'products',
+  'product_images',
   'inventory',
+  'promotions',
   'orders',
   'order_items',
-  'Token',
+  'direcciones',
+  'returns',
+  'backup_schedules',
+  'backups',
 ];
 
 // ── Helper: genera el SQL completo de una tabla ──────────────────────────────
@@ -54,8 +56,11 @@ async function generarSQLTabla(db, tabla) {
           if (val === null)             return 'NULL';
           if (typeof val === 'number')  return val;
           if (typeof val === 'boolean') return val ? 1 : 0;
-          if (val instanceof Date)      return `'${val.toISOString().slice(0,19).replace('T',' ')}'`;
-          const escaped = String(val).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+          if (val instanceof Date)
+            return `'${val.toISOString().slice(0, 19).replace('T', ' ')}'`;
+          const escaped = String(val)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'");
           return `'${escaped}'`;
         });
         return `(${vals.join(', ')})`;

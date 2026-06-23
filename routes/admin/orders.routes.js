@@ -1,9 +1,9 @@
 const express = require('express');
-const router = express.Router();
+const router  = express.Router();
 
-const { getDB } = require('../../config/db');
+const { getDB }          = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
-const { sanitizeLog } = require('../../helpers/sanitizeLog');
+const { sanitizeLog }    = require('../../helpers/sanitizeLog');
 
 const STATUS_VALIDOS = ['pendiente', 'preparando', 'en_camino', 'entregado', 'cancelado'];
 
@@ -48,7 +48,6 @@ router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
 router.get('/notificaciones', authMiddleware, async (req, res) => {
   try {
     const db    = await getDB();
-    const since = req.query.since || new Date(Date.now() - 7 * 86400000).toISOString();
 
     const [pedidos] = await db.execute(`
       SELECT o.id, o.total, o.status, o.fecha, o.sucursal,
@@ -243,6 +242,7 @@ router.patch('/:id/status', authMiddleware, adminOnly, async (req, res) => {
 
 // ================================
 // ➕ POST /  — crear pedido (cliente logueado)
+// ✅ FIX: validación de stock DENTRO de la transacción con FOR UPDATE
 // ================================
 router.post('/', authMiddleware, async (req, res) => {
   const { total, items } = req.body;
@@ -252,16 +252,20 @@ router.post('/', authMiddleware, async (req, res) => {
   if (!total || total <= 0)
     return res.status(400).json({ error: 'Total inválido' });
 
+  const conn = await (await getDB()).getConnection();
+
   try {
-    const db = await getDB();
+    await conn.beginTransaction();
+
+    // ── 1. Validar stock Y asignar sucursal DENTRO de la transacción ──────────
+    // FOR UPDATE bloquea las filas de inventory hasta el COMMIT,
+    // evitando que otro pedido concurrente use el mismo stock.
     const itemsConSucursal = [];
 
-    // ── 1. Asignar sucursal a cada ítem y validar stock ──────────────────
     for (const item of items) {
       const { product_id, cantidad } = item;
 
-      // Buscar sucursal con stock suficiente para la cantidad pedida
-      const [rows] = await db.execute(`
+      const [rows] = await conn.execute(`
         SELECT i.branch_id, b.nombre, i.stock
         FROM inventory i
         JOIN branches b ON b.id = i.branch_id
@@ -270,10 +274,14 @@ router.post('/', authMiddleware, async (req, res) => {
           AND i.stock >= ?
         ORDER BY i.stock DESC
         LIMIT 1
+        FOR UPDATE
       `, [product_id, cantidad]);
 
-      // ✅ Si no hay ninguna sucursal con stock suficiente → rechazar pedido
       if (rows.length === 0) {
+        await conn.rollback();
+        conn.release();
+
+        const db = await getDB();
         const [pNombre] = await db.execute(
           'SELECT nombre FROM products WHERE id = ?', [product_id]
         );
@@ -286,21 +294,21 @@ router.post('/', authMiddleware, async (req, res) => {
 
       itemsConSucursal.push({
         ...item,
-        branch_id:    rows[0].branch_id,
+        branch_id:     rows[0].branch_id,
         branch_nombre: rows[0].nombre,
       });
     }
 
-    // ── 2. Agrupar ítems por sucursal ─────────────────────────────────────
+    // ── 2. Agrupar ítems por sucursal ─────────────────────────────────────────
     const porSucursal = {};
     for (const item of itemsConSucursal) {
       const key = item.branch_id;
       if (!porSucursal[key]) {
         porSucursal[key] = {
-          branch_id:    item.branch_id,
+          branch_id:     item.branch_id,
           branch_nombre: item.branch_nombre,
-          items:        [],
-          subtotal:     0,
+          items:         [],
+          subtotal:      0,
         };
       }
       porSucursal[key].items.push(item);
@@ -309,65 +317,57 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const grupos    = Object.values(porSucursal);
     const pedidoRef = require('crypto').randomUUID();
-    const conn      = await db.getConnection();
     const orderIds  = [];
 
-    try {
-      await conn.beginTransaction();
+    for (const grupo of grupos) {
+      // ── 3a. Crear la orden ────────────────────────────────────────────
+      const [result] = await conn.execute(`
+        INSERT INTO orders (user_id, sucursal, total, status, fecha, pedido_ref)
+        VALUES (?, ?, ?, 'pendiente', NOW(), ?)
+      `, [req.user.id, grupo.branch_id, grupo.subtotal, pedidoRef]);
 
-      for (const grupo of grupos) {
-        // ── 3a. Crear la orden ────────────────────────────────────────────
-        const [result] = await conn.execute(`
-          INSERT INTO orders (user_id, sucursal, total, status, fecha, pedido_ref)
-          VALUES (?, ?, ?, 'pendiente', NOW(), ?)
-        `, [req.user.id, grupo.branch_id, grupo.subtotal, pedidoRef]);
+      const orderId = result.insertId;
+      orderIds.push({ orderId, sucursal: grupo.branch_nombre });
 
-        const orderId = result.insertId;
-        orderIds.push({ orderId, sucursal: grupo.branch_nombre });
+      for (const item of grupo.items) {
+        // ── 3b. Insertar ítem del pedido ──────────────────────────────
+        await conn.execute(
+          `INSERT INTO order_items (order_id, product_id, cantidad, subtotal)
+           VALUES (?, ?, ?, ?)`,
+          [orderId, item.product_id, item.cantidad, item.subtotal]
+        );
 
-        for (const item of grupo.items) {
-          // ── 3b. Insertar ítem del pedido ──────────────────────────────
-          await conn.execute(
-            `INSERT INTO order_items (order_id, product_id, cantidad, subtotal)
-             VALUES (?, ?, ?, ?)`,
-            [orderId, item.product_id, item.cantidad, item.subtotal]
-          );
-
-          // ── 3c. ✅ DESCONTAR STOCK en la sucursal asignada ────────────
-          // GREATEST(..., 0) evita stock negativo por condición de carrera
-          await conn.execute(
-            `UPDATE inventory
-             SET stock = GREATEST(stock - ?, 0)
-             WHERE product_id = ? AND branch_id = ?`,
-            [item.cantidad, item.product_id, grupo.branch_id]
-          );
-        }
+        // ── 3c. Descontar stock ───────────────────────────────────────
+        // GREATEST(..., 0) es defensa adicional aunque FOR UPDATE ya garantiza stock >= cantidad
+        await conn.execute(
+          `UPDATE inventory
+           SET stock = GREATEST(stock - ?, 0)
+           WHERE product_id = ? AND branch_id = ?`,
+          [item.cantidad, item.product_id, grupo.branch_id]
+        );
       }
-
-      await conn.commit();
-      conn.release();
-
-      const sucursales = [...new Set(grupos.map(g => g.branch_nombre))];
-      console.log(
-        `✅ ${orderIds.length} pedido(s) creado(s) | usuario ${req.user.id} | $${total} | ${sucursales.join(', ')}`
-      );
-
-      res.json({
-        message:   'Pedido creado correctamente',
-        orderId:   orderIds[0].orderId,
-        pedidoRef,
-        orderIds,
-        sucursales,
-        sucursal:  sucursales[0],
-      });
-
-    } catch (err) {
-      await conn.rollback();
-      conn.release();
-      throw err;
     }
 
+    await conn.commit();
+    conn.release();
+
+    const sucursales = [...new Set(grupos.map(g => g.branch_nombre))];
+    console.log(
+      `✅ ${orderIds.length} pedido(s) creado(s) | usuario ${req.user.id} | $${total} | ${sucursales.join(', ')}`
+    );
+
+    res.json({
+      message:   'Pedido creado correctamente',
+      orderId:   orderIds[0].orderId,
+      pedidoRef,
+      orderIds,
+      sucursales,
+      sucursal:  sucursales[0],
+    });
+
   } catch (err) {
+    await conn.rollback();
+    conn.release();
     console.error('Error creando pedido:', err);
     res.status(500).json({ error: 'Error al procesar el pedido', detalle: err.message });
   }

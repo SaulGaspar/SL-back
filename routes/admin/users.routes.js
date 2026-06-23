@@ -173,27 +173,47 @@ router.patch('/:id/unlock', authMiddleware, adminOnly, async (req, res) => {
 });
 
 // POST /api/admin/users/:id/reset-password
+
 router.post('/:id/reset-password', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
-    const [user] = await db.execute('SELECT id, usuario, correo, nombre FROM users WHERE id = ?', [req.params.id]);
+    const [user] = await db.execute(
+      'SELECT id, usuario, correo, nombre FROM users WHERE id = ?',
+      [req.params.id]
+    );
     if (user.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
     const tempPassword = generarPasswordAleatoria(12);
-    const hash = await bcrypt.hash(tempPassword, 12); // NOSONAR - hash is dynamically generated, not hard-coded
+    const hash = await bcrypt.hash(tempPassword, 12); // NOSONAR
 
-    await db.execute('UPDATE users SET password = ?, updatedAt = NOW() WHERE id = ?', [hash, req.params.id]);
+    await db.execute(
+      'UPDATE users SET password = ?, updatedAt = NOW() WHERE id = ?',
+      [hash, req.params.id]
+    );
 
     const transporter = createTransporter();
     await transporter.sendMail({
       from: process.env.EMAIL_FROM,
-      to: user[0].correo,
+      to:   user[0].correo,
       subject: 'Contraseña restablecida - SportLike',
-      html: `<p>Hola ${user[0].nombre},</p><p>Tu contraseña ha sido restablecida por un administrador.</p><p><strong>Tu nueva contraseña temporal es:</strong> ${tempPassword}</p><p>Por seguridad, te recomendamos cambiarla al iniciar sesión.</p>`
+      html: `
+        <p>Hola ${user[0].nombre},</p>
+        <p>Tu contraseña ha sido restablecida por un administrador.</p>
+        <p><strong>Tu nueva contraseña temporal es:</strong> ${tempPassword}</p>
+        <p>Por seguridad, te recomendamos cambiarla al iniciar sesión.</p>
+      `
     });
 
-    console.log(`🔑 Contraseña reseteada para: ${sanitizeLog(user[0].usuario)} por admin ${sanitizeLog(req.user.usuario)}`);
-    res.json({ message: 'Contraseña restablecida. Se ha enviado la nueva contraseña al correo del usuario.', tempPassword });
+    console.log(
+      `🔑 Contraseña reseteada para: ${sanitizeLog(user[0].usuario)} ` +
+      `por admin ${sanitizeLog(req.user.usuario)}`
+    );
+
+    // ✅ NO se devuelve tempPassword en la respuesta
+    res.json({
+      message: 'Contraseña restablecida. Se ha enviado la nueva contraseña al correo del usuario.'
+    });
+
   } catch (err) {
     console.error('Error reseteando contraseña:', err);
     res.status(500).json({ error: 'Error reseteando contraseña' });
