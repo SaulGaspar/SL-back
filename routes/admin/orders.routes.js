@@ -245,17 +245,30 @@ router.patch('/:id/status', authMiddleware, adminOnly, async (req, res) => {
 // ✅ FIX: validación de stock DENTRO de la transacción con FOR UPDATE
 // ================================
 router.post('/', authMiddleware, async (req, res) => {
-  const { total, items } = req.body;
+  const { total, items, direccion_id } = req.body;
 
   if (!items || !Array.isArray(items) || items.length === 0)
     return res.status(400).json({ error: 'El pedido no tiene productos' });
   if (!total || total <= 0)
     return res.status(400).json({ error: 'Total inválido' });
+  if (!direccion_id)
+    return res.status(400).json({ error: 'Debes seleccionar una dirección de envío antes de pagar' });
 
   const conn = await (await getDB()).getConnection();
 
   try {
     await conn.beginTransaction();
+
+    const [direccion] = await conn.execute(
+      'SELECT id FROM direcciones WHERE id = ? AND usuario_id = ?',
+      [direccion_id, req.user.id]
+    );
+
+    if (direccion.length === 0) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ error: 'La dirección seleccionada no es válida' });
+    }
 
     // ── 1. Validar stock Y asignar sucursal DENTRO de la transacción ──────────
     // FOR UPDATE bloquea las filas de inventory hasta el COMMIT,
