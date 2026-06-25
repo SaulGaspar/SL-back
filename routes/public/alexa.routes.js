@@ -71,13 +71,14 @@ const GROUP_PRODUCTOS = `
 
 router.get('/products/all', async (req, res) => {
   try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 200);
     const db = await getDB();
     const [rows] = await db.execute(`
       ${SELECT_PRODUCTOS}
       WHERE p.activo = 1
       ${GROUP_PRODUCTOS}
-      ORDER BY RAND()
-      LIMIT 25
+      ORDER BY p.id DESC
+      LIMIT ${limit}
     `);
     res.json({ total: rows.length, products: rows.map(mapearProducto) });
   } catch (err) {
