@@ -43,6 +43,7 @@ const mapearProducto = (r) => ({
   precio: r.precio,
   categoria: r.categoria,
   imagen: imagenPublica(r.imagen),
+  imageUrl: imagenPublica(r.imagen),
   tallas: dividirLista(r.talla),
   colores: dividirLista(r.colores),
   activo: Number(r.activo) === 1,
@@ -54,7 +55,7 @@ const SELECT_PRODUCTOS = `
   SELECT
     p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
     COALESCE(
-      (SELECT url FROM product_images WHERE product_id = p.id ORDER BY orden ASC, id ASC LIMIT 1),
+      (SELECT url FROM product_images WHERE product_id = p.id ORDER BY id ASC LIMIT 1),
       p.imagen
     ) as imagen,
     p.talla, p.colores, p.activo,
@@ -159,7 +160,7 @@ router.get('/stock', async (req, res) => {
       SELECT
         p.id, p.nombre, p.marca, p.descripcion, p.precio, p.categoria,
         COALESCE(
-          (SELECT url FROM product_images WHERE product_id = p.id ORDER BY orden ASC, id ASC LIMIT 1),
+          (SELECT url FROM product_images WHERE product_id = p.id ORDER BY id ASC LIMIT 1),
           p.imagen
         ) as imagen,
         p.talla, p.colores, p.activo,
