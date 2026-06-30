@@ -64,6 +64,9 @@ router.post('/', async (req, res) => {
   const orderId = Number(req.body.order_id);
   const reason = String(req.body.reason || '');
   const details = String(req.body.details || '').trim();
+  const evidenceImages = Array.isArray(req.body.evidence_images)
+    ? req.body.evidence_images
+    : [];
   const validReasons = ['damaged', 'wrong_item', 'size', 'quality', 'other'];
 
   if (!Number.isInteger(orderId) || orderId <= 0) {
@@ -75,6 +78,20 @@ router.post('/', async (req, res) => {
   if (details.length < 10 || details.length > 1500) {
     return res.status(400).json({
       error: 'La descripción debe tener entre 10 y 1500 caracteres',
+    });
+  }
+  if (evidenceImages.length > 3) {
+    return res.status(400).json({ error: 'Solo puedes adjuntar hasta 3 fotografías' });
+  }
+  const invalidImage = evidenceImages.some(
+    (image) =>
+      typeof image !== 'string' ||
+      !/^data:image\/(jpeg|png|webp);base64,/i.test(image) ||
+      image.length > 2200000
+  );
+  if (invalidImage) {
+    return res.status(400).json({
+      error: 'Las evidencias deben ser imágenes JPG, PNG o WEBP de máximo 1.5 MB',
     });
   }
 
@@ -96,9 +113,16 @@ router.post('/', async (req, res) => {
 
     const [result] = await db.execute(
       `INSERT INTO return_requests
-        (order_id, user_id, reason, details, requested_amount)
-       VALUES (?, ?, ?, ?, ?)`,
-      [order.id, req.user.id, reason, details, order.total]
+        (order_id, user_id, reason, details, evidence_images, requested_amount)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        order.id,
+        req.user.id,
+        reason,
+        details,
+        evidenceImages.length ? JSON.stringify(evidenceImages) : null,
+        order.total,
+      ]
     );
 
     const [[created]] = await db.execute(

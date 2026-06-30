@@ -22,6 +22,7 @@ function ensureReturnsTable() {
           user_id INT NOT NULL,
           reason ENUM('damaged', 'wrong_item', 'size', 'quality', 'other') NOT NULL,
           details TEXT NOT NULL,
+          evidence_images JSON NULL,
           requested_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
           status ENUM('requested', 'reviewing', 'approved', 'rejected', 'refunded')
             NOT NULL DEFAULT 'requested',
