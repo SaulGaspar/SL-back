@@ -14,6 +14,8 @@ const profileRoutes  = require('./routes/public/profile.routes');
 const publicProducts = require('./routes/public/products.routes');
 const addressRoutes  = require('./routes/public/address');        
 const alexaRoutes = require('./routes/public/alexa.routes');
+const publicPromotions = require('./routes/public/promotions.routes');
+const publicReturns = require('./routes/public/returns.routes');
 // ── Rutas admin
 const adminProducts  = require('./routes/admin/products.routes');
 const adminInventory = require('./routes/admin/inventory.routes');
@@ -24,6 +26,8 @@ const adminDashboard = require('./routes/admin/dashboard.routes');
 const backupsRoutes  = require('./routes/admin/backups.routes');
 const monitorRoutes  = require('./routes/admin/Monitor.routes');
 const reportsRoutes  = require('./routes/admin/Reports.routes');
+const promotionsRoutes = require('./routes/admin/promotions.routes');
+const returnsRoutes = require('./routes/admin/returns.routes');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -70,6 +74,8 @@ app.use('/api',  profileRoutes);
 app.use('/api/products',       publicProducts);
 app.use('/api/user/addresses', addressRoutes);   // ← NUEVO
 app.use('/api/alexa', alexaRoutes);
+app.use('/api/promotions', publicPromotions);
+app.use('/api/returns', publicReturns);
 
 // RUTAS ADMIN
 app.use('/api/admin/products',  adminProducts);
@@ -81,6 +87,8 @@ app.use('/api/admin/dashboard', adminDashboard);
 app.use('/api/admin/backups',   backupsRoutes);
 app.use('/api/admin/monitor',   monitorRoutes);
 app.use('/api/admin/reports',   reportsRoutes);
+app.use('/api/admin/promotions', promotionsRoutes);
+app.use('/api/admin/returns', returnsRoutes);
 
 app.use('/api/orders', adminOrders);
 
