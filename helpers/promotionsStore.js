@@ -6,6 +6,15 @@ function ensurePromotionsTable() {
   if (!tableReady) {
     tableReady = (async () => {
       const db = await getDB();
+      try {
+        await db.execute('SELECT 1 FROM promotions LIMIT 1');
+        return;
+      } catch (error) {
+        if (error.code !== 'ER_NO_SUCH_TABLE' && error.errno !== 1146) {
+          throw error;
+        }
+      }
+
       await db.execute(`
         CREATE TABLE IF NOT EXISTS promotions (
           id INT NOT NULL AUTO_INCREMENT,
