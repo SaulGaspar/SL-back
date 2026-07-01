@@ -4,6 +4,10 @@ const router  = express.Router();
 const { getDB }          = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { sanitizeLog }    = require('../../helpers/sanitizeLog');
+const {
+  getApprovedPaymentForUser,
+  hashCartItems,
+} = require('../../helpers/mercadoPago');
 
 const STATUS_VALIDOS = ['pendiente', 'preparando', 'en_camino', 'entregado', 'cancelado'];
 
@@ -245,16 +249,88 @@ router.patch('/:id/status', authMiddleware, adminOnly, async (req, res) => {
 // ✅ FIX: validación de stock DENTRO de la transacción con FOR UPDATE
 // ================================
 router.post('/', authMiddleware, async (req, res) => {
-  const { total, items, direccion_id } = req.body;
+  const { items, direccion_id, payment_id } = req.body;
 
   if (!items || !Array.isArray(items) || items.length === 0)
     return res.status(400).json({ error: 'El pedido no tiene productos' });
-  if (!total || total <= 0)
-    return res.status(400).json({ error: 'Total inválido' });
+  if (items.some((item) =>
+    !Number.isInteger(Number(item.product_id)) ||
+    Number(item.product_id) <= 0 ||
+    !Number.isInteger(Number(item.cantidad)) ||
+    Number(item.cantidad) <= 0 ||
+    Number(item.cantidad) > 20
+  )) {
+    return res.status(400).json({ error: 'El pedido contiene productos o cantidades inválidas' });
+  }
   if (!direccion_id)
     return res.status(400).json({ error: 'Debes seleccionar una dirección de envío antes de pagar' });
+  if (!payment_id)
+    return res.status(402).json({ error: 'Debes completar el pago con Mercado Pago' });
 
-  const conn = await (await getDB()).getConnection();
+  let payment;
+  try {
+    payment = await getApprovedPaymentForUser(payment_id, req.user.id);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      error: error.message || 'No se pudo verificar el pago',
+      payment_status: error.paymentStatus,
+    });
+  }
+
+  const paymentAddressId = payment?.metadata?.address_id;
+  if (
+    paymentAddressId !== undefined &&
+    paymentAddressId !== null &&
+    String(paymentAddressId) !== String(direccion_id)
+  ) {
+    return res.status(400).json({
+      error: 'La dirección no coincide con la utilizada durante el pago',
+    });
+  }
+  if (
+    payment?.metadata?.cart_hash &&
+    payment.metadata.cart_hash !== hashCartItems(items)
+  ) {
+    return res.status(400).json({
+      error: 'El carrito no coincide con los productos pagados',
+    });
+  }
+
+  const pedidoRef = `MP-${payment.id}`;
+  let db;
+  let existingOrders;
+  try {
+    db = await getDB();
+    [existingOrders] = await db.execute(
+      `SELECT o.id AS orderId, o.pedido_ref AS pedidoRef, b.nombre AS sucursal
+       FROM orders o
+       LEFT JOIN branches b ON b.id = o.sucursal
+       WHERE o.user_id = ? AND o.pedido_ref = ?
+       ORDER BY o.id`,
+      [req.user.id, pedidoRef]
+    );
+  } catch (error) {
+    console.error('Error consultando pago ya procesado:', error.message);
+    return res.status(500).json({ error: 'No se pudo validar el pedido pagado' });
+  }
+
+  if (existingOrders.length > 0) {
+    const sucursales = [
+      ...new Set(existingOrders.map((order) => order.sucursal).filter(Boolean)),
+    ];
+    return res.json({
+      message: 'El pedido de este pago ya estaba registrado',
+      alreadyProcessed: true,
+      orderId: existingOrders[0].orderId,
+      pedidoRef,
+      orderIds: existingOrders,
+      sucursales,
+      sucursal: sucursales[0] || '',
+      paymentId: payment.id,
+    });
+  }
+
+  const conn = await db.getConnection();
 
   try {
     await conn.beginTransaction();
@@ -279,11 +355,14 @@ router.post('/', authMiddleware, async (req, res) => {
       const { product_id, cantidad } = item;
 
       const [rows] = await conn.execute(`
-        SELECT i.branch_id, b.nombre, i.stock
+        SELECT i.branch_id, b.nombre, i.stock,
+               p.nombre AS product_name, p.precio
         FROM inventory i
         JOIN branches b ON b.id = i.branch_id
+        JOIN products p ON p.id = i.product_id
         WHERE i.product_id = ?
           AND b.activo = 1
+          AND p.activo = 1
           AND i.stock >= ?
         ORDER BY i.stock DESC
         LIMIT 1
@@ -307,8 +386,31 @@ router.post('/', authMiddleware, async (req, res) => {
 
       itemsConSucursal.push({
         ...item,
+        product_id,
+        cantidad,
+        subtotal: Number(rows[0].precio) * cantidad,
         branch_id:     rows[0].branch_id,
         branch_nombre: rows[0].nombre,
+      });
+    }
+
+    const productsTotal = itemsConSucursal.reduce(
+      (sum, item) => sum + Number(item.subtotal),
+      0
+    );
+    const shipping = productsTotal >= 1500 ? 0 : 75;
+    const expectedPaymentTotal = productsTotal + shipping;
+    const paidAmount = Number(payment.transaction_amount);
+
+    if (
+      payment.currency_id !== 'MXN' ||
+      !Number.isFinite(paidAmount) ||
+      Math.abs(paidAmount - expectedPaymentTotal) > 0.01
+    ) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({
+        error: 'El monto pagado no coincide con el total actual del carrito',
       });
     }
 
@@ -329,7 +431,6 @@ router.post('/', authMiddleware, async (req, res) => {
     }
 
     const grupos    = Object.values(porSucursal);
-    const pedidoRef = require('crypto').randomUUID();
     const orderIds  = [];
 
     for (const grupo of grupos) {
@@ -366,7 +467,7 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const sucursales = [...new Set(grupos.map(g => g.branch_nombre))];
     console.log(
-      `✅ ${orderIds.length} pedido(s) creado(s) | usuario ${req.user.id} | $${total} | ${sucursales.join(', ')}`
+      `✅ ${orderIds.length} pedido(s) creado(s) | usuario ${req.user.id} | pago MP ${payment.id} | $${paidAmount} | ${sucursales.join(', ')}`
     );
 
     res.json({
@@ -376,6 +477,9 @@ router.post('/', authMiddleware, async (req, res) => {
       orderIds,
       sucursales,
       sucursal:  sucursales[0],
+      paymentId: payment.id,
+      paidTotal: paidAmount,
+      shipping,
     });
 
   } catch (err) {

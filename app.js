@@ -16,6 +16,7 @@ const addressRoutes  = require('./routes/public/address');
 const alexaRoutes = require('./routes/public/alexa.routes');
 const publicPromotions = require('./routes/public/promotions.routes');
 const publicReturns = require('./routes/public/returns.routes');
+const paymentsRoutes = require('./routes/public/payments.routes');
 // ── Rutas admin
 const adminProducts  = require('./routes/admin/products.routes');
 const adminInventory = require('./routes/admin/inventory.routes');
@@ -76,6 +77,7 @@ app.use('/api/user/addresses', addressRoutes);   // ← NUEVO
 app.use('/api/alexa', alexaRoutes);
 app.use('/api/promotions', publicPromotions);
 app.use('/api/returns', publicReturns);
+app.use('/api/payments', paymentsRoutes);
 
 // RUTAS ADMIN
 app.use('/api/admin/products',  adminProducts);
