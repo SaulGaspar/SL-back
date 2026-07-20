@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const { getDB } = require('../../config/db');
+const { getRecommendations } = require('../../services/apriori.service');
 
 // ================================
 // 📦 GET /api/products
@@ -159,6 +160,24 @@ router.get('/prediccion-publica', async (req, res) => {
 // 🖼️ GET /api/products/:id/images  — público, sin auth
 // ⚠️  DESPUÉS de todas las rutas con nombre fijo
 // ================================
+router.get('/:id/recommendations', async (req, res) => {
+  const productId = Number(req.params.id);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 4, 1), 12);
+
+  if (!Number.isInteger(productId) || productId <= 0) {
+    return res.status(400).json({ error: 'Identificador de producto inválido' });
+  }
+
+  try {
+    const db = await getDB();
+    const recommendations = await getRecommendations(db, productId, limit);
+    res.json({ source: 'apriori', recommendations });
+  } catch (err) {
+    console.error('Error obteniendo recomendaciones Apriori:', err.message);
+    res.status(500).json({ error: 'Error obteniendo recomendaciones' });
+  }
+});
+
 router.get('/:id/images', async (req, res) => {
   try {
     const db = await getDB();
