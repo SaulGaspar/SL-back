@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "apriori:build": "node scripts/build-apriori.js"
+    "apriori:build": "node scripts/build-apriori.js",
+    "repurchase:build": "node scripts/build-repurchase.js",
+    "segments:build": "node scripts/build-customer-segments.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.98.0",

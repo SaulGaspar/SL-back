@@ -29,6 +29,7 @@ const monitorRoutes  = require('./routes/admin/Monitor.routes');
 const reportsRoutes  = require('./routes/admin/Reports.routes');
 const promotionsRoutes = require('./routes/admin/promotions.routes');
 const returnsRoutes = require('./routes/admin/returns.routes');
+const mlRoutes = require('./routes/admin/ml.routes');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -91,6 +92,7 @@ app.use('/api/admin/monitor',   monitorRoutes);
 app.use('/api/admin/reports',   reportsRoutes);
 app.use('/api/admin/promotions', promotionsRoutes);
 app.use('/api/admin/returns', returnsRoutes);
+app.use('/api/admin/ml', mlRoutes);
 
 app.use('/api/orders', adminOrders);
 
