@@ -377,6 +377,45 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
           }))
         : [];
 
+      const stock_estimado_30d = Math.max(0, Math.round(S0 - v30));
+      const riesgo_clase = S0 === 0 || S0 <= Sc || stock_estimado_30d <= Sc ? 1 : 0;
+      const runway_score = dias_lineales !== null
+        ? Math.max(0, 1 - Math.min(dias_lineales, 60) / 60)
+        : 0;
+      const deficit_30d = Sc > 0
+        ? Math.max(0, (Sc - stock_estimado_30d) / Sc)
+        : (stock_estimado_30d <= 0 ? 1 : 0);
+      const stock_pressure = Sc > 0
+        ? Math.max(0, 1 - Math.min(S0 / Math.max(Sc * 3, 1), 1))
+        : 0;
+
+      let probabilidad_riesgo = Math.round(
+        (deficit_30d * 0.55 + runway_score * 0.30 + stock_pressure * 0.15) * 100
+      );
+      if (S0 === 0) probabilidad_riesgo = 100;
+      else if (S0 <= Sc) probabilidad_riesgo = Math.max(probabilidad_riesgo, 92);
+      else if (riesgo_clase) probabilidad_riesgo = Math.max(probabilidad_riesgo, 75);
+      else if (alerta_nivel === 'bajo') probabilidad_riesgo = Math.max(probabilidad_riesgo, 60);
+      else if (alerta_nivel === 'moderado') probabilidad_riesgo = Math.max(probabilidad_riesgo, 40);
+      else if (alerta_nivel === 'sin_movimiento') probabilidad_riesgo = Math.min(probabilidad_riesgo, 12);
+      else probabilidad_riesgo = Math.min(probabilidad_riesgo, 35);
+      probabilidad_riesgo = Math.max(0, Math.min(100, probabilidad_riesgo));
+
+      const accion_sugerida =
+        alerta_nivel === 'agotado' ? 'Reabastecer de inmediato'
+        : riesgo_clase ? 'Priorizar compra o traslado de inventario'
+        : alerta_nivel === 'bajo' ? 'Programar reposición esta semana'
+        : alerta_nivel === 'moderado' ? 'Monitorear demanda y stock'
+        : alerta_nivel === 'sin_movimiento' ? 'Revisar rotación antes de reordenar'
+        : 'Sin acción urgente';
+
+      const motivo =
+        S0 === 0 ? 'Stock actual en cero'
+        : S0 <= Sc ? 'Stock actual igual o menor al mínimo'
+        : stock_estimado_30d <= Sc ? 'El stock estimado a 30 días cae al mínimo'
+        : v30 === 0 ? 'No registra ventas recientes'
+        : 'Stock suficiente según ventas recientes';
+
       return {
         product_id:          row.product_id,
         producto:            row.producto,
@@ -390,6 +429,12 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
         tasa_diaria,
         ventas_semanales:    ventas_sem,
         k,
+        stock_estimado_30d,
+        probabilidad_riesgo,
+        riesgo_clase,
+        nivel_riesgo:        riesgo_clase ? 'riesgo' : 'sin_riesgo',
+        accion_sugerida,
+        motivo,
         semanas_a_critico,
         semanas_agotamiento,
         dias_lineales,
