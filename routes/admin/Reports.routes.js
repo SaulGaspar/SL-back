@@ -297,6 +297,7 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
         p.nombre                                AS producto,
         p.categoria,
         p.marca,
+        p.precio                                AS precio,
         b.id                                    AS branch_id,
         COALESCE(b.nombre, b.id)               AS sucursal,
         i.stock                                 AS stock_actual,
@@ -308,10 +309,40 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
            JOIN orders o2 ON o2.id = oi2.order_id
            WHERE oi2.product_id = p.id
              AND o2.sucursal    = b.id
-             AND o2.status     != 'cancelado'
-             AND DATE(o2.fecha) >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+             AND o2.status      = 'entregado'
+             AND DATE(o2.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
           ), 0
-        )                                       AS ventas_30d
+        )                                       AS ventas_30d,
+        COALESCE(
+          (SELECT SUM(oi3.cantidad)
+           FROM order_items oi3
+           JOIN orders o3 ON o3.id = oi3.order_id
+           WHERE oi3.product_id = p.id
+             AND o3.sucursal    = b.id
+             AND o3.status      = 'entregado'
+             AND DATE(o3.fecha) >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)
+             AND DATE(o3.fecha) <  DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          ), 0
+        )                                       AS ventas_30d_anterior,
+        COALESCE(
+          (SELECT COUNT(DISTINCT o4.id)
+           FROM order_items oi4
+           JOIN orders o4 ON o4.id = oi4.order_id
+           WHERE oi4.product_id = p.id
+             AND o4.sucursal    = b.id
+             AND o4.status      = 'entregado'
+             AND DATE(o4.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          ), 0
+        )                                       AS pedidos_30d,
+        (
+          SELECT MAX(DATE(o5.fecha))
+          FROM order_items oi5
+          JOIN orders o5 ON o5.id = oi5.order_id
+          WHERE oi5.product_id = p.id
+            AND o5.sucursal    = b.id
+            AND o5.status      = 'entregado'
+            AND DATE(o5.fecha) >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+        )                                       AS ultima_venta
       FROM inventory i
       JOIN products p  ON p.id = i.product_id
       JOIN branches b  ON b.id = i.branch_id
@@ -325,7 +356,10 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
     const resultado = rows.map(row => {
       const S0      = Number(row.stock_actual)  || 0;
       const v30     = Number(row.ventas_30d)    || 0;
+      const v30Prev = Number(row.ventas_30d_anterior) || 0;
+      const pedidos30 = Number(row.pedidos_30d) || 0;
       const Sc      = Number(row.min_stock)     || 0;
+      const precio  = Number(row.precio)        || 0;
 
       // Tasa diaria y semanal
       const tasa_diaria  = +(v30 / 30).toFixed(3);
@@ -378,7 +412,14 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
         : [];
 
       const stock_estimado_30d = Math.max(0, Math.round(S0 - v30));
-      const riesgo_clase = S0 === 0 || S0 <= Sc || stock_estimado_30d <= Sc ? 1 : 0;
+      const dias_inventario = tasa_diaria > 0 ? Math.round(S0 / tasa_diaria) : null;
+      const variacion_ventas_30d = v30Prev > 0 ? +((v30 - v30Prev) / v30Prev).toFixed(4) : 0;
+      const dias_desde_ultima_venta = row.ultima_venta
+        ? Math.max(0, Math.floor((Date.now() - new Date(row.ultima_venta).getTime()) / 86400000))
+        : 999;
+      const seAgotaraBool = S0 === 0 || S0 <= Sc || stock_estimado_30d <= Sc;
+      const se_agotara_30d = seAgotaraBool ? 'Si' : 'No';
+      const clasificacion_riesgo = seAgotaraBool ? 'se_agotara_30d' : 'no_se_agotara_30d';
       const runway_score = dias_lineales !== null
         ? Math.max(0, 1 - Math.min(dias_lineales, 60) / 60)
         : 0;
@@ -394,7 +435,7 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
       );
       if (S0 === 0) probabilidad_riesgo = 100;
       else if (S0 <= Sc) probabilidad_riesgo = Math.max(probabilidad_riesgo, 92);
-      else if (riesgo_clase) probabilidad_riesgo = Math.max(probabilidad_riesgo, 75);
+      else if (seAgotaraBool) probabilidad_riesgo = Math.max(probabilidad_riesgo, 75);
       else if (alerta_nivel === 'bajo') probabilidad_riesgo = Math.max(probabilidad_riesgo, 60);
       else if (alerta_nivel === 'moderado') probabilidad_riesgo = Math.max(probabilidad_riesgo, 40);
       else if (alerta_nivel === 'sin_movimiento') probabilidad_riesgo = Math.min(probabilidad_riesgo, 12);
@@ -403,7 +444,7 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
 
       const accion_sugerida =
         alerta_nivel === 'agotado' ? 'Reabastecer de inmediato'
-        : riesgo_clase ? 'Priorizar compra o traslado de inventario'
+        : seAgotaraBool ? 'Priorizar compra o traslado de inventario'
         : alerta_nivel === 'bajo' ? 'Programar reposición esta semana'
         : alerta_nivel === 'moderado' ? 'Monitorear demanda y stock'
         : alerta_nivel === 'sin_movimiento' ? 'Revisar rotación antes de reordenar'
@@ -421,18 +462,27 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
         producto:            row.producto,
         categoria:           row.categoria,
         marca:               row.marca,
+        precio,
         branch_id:           row.branch_id,
         sucursal:            row.sucursal,
         stock_actual:        S0,
         min_stock:           Sc,
         ventas_30d:          v30,
+        ventas_30d_anterior: v30Prev,
+        pedidos_30d:         pedidos30,
         tasa_diaria,
+        tasa_diaria_venta:   tasa_diaria,
         ventas_semanales:    ventas_sem,
         k,
+        dias_inventario,
         stock_estimado_30d,
+        variacion_ventas_30d,
+        dias_desde_ultima_venta,
+        se_agotara_30d,
+        resultado_30d:        se_agotara_30d === 'Si' ? 'Si se agotara' : 'No se agotara',
+        clasificacion_riesgo,
         probabilidad_riesgo,
-        riesgo_clase,
-        nivel_riesgo:        riesgo_clase ? 'riesgo' : 'sin_riesgo',
+        nivel_riesgo:        clasificacion_riesgo,
         accion_sugerida,
         motivo,
         semanas_a_critico,
