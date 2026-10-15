@@ -10,39 +10,30 @@ const {
 } = require('../../helpers/mercadoPago');
 
 const STATUS_VALIDOS = ['pendiente', 'preparando', 'en_camino', 'entregado', 'cancelado'];
+const { buildOrderFilter, orderSummarySQL, withLegacyAliases, normalizeOrderStatus } = require('../../helpers/orderStats');
 
 // ================================
 // 📊 GET /stats/summary
 // ================================
 router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
   try {
+    const {where,params} = buildOrderFilter(req.query);
     const db = await getDB();
-    const [stats] = await db.execute(`
-      SELECT 
-        COUNT(*) AS total_ordenes,
-        COALESCE(SUM(total), 0) AS ingresos_totales,
-        COALESCE(AVG(total), 0) AS ticket_promedio,
-        SUM(CASE WHEN status = 'pendiente'  THEN 1 ELSE 0 END) AS pendientes,
-        SUM(CASE WHEN status = 'procesando' THEN 1 ELSE 0 END) AS procesando,
-        SUM(CASE WHEN status = 'enviado'    THEN 1 ELSE 0 END) AS enviado,
-        SUM(CASE WHEN status = 'entregado'  THEN 1 ELSE 0 END) AS entregadas,
-        SUM(CASE WHEN status = 'cancelado'  THEN 1 ELSE 0 END) AS canceladas
-      FROM orders
-    `);
+    const [stats] = await db.execute(orderSummarySQL(where),params);
     const [porSucursal] = await db.execute(`
-      SELECT o.sucursal, b.nombre AS nombre_sucursal, COUNT(*) AS ordenes, COALESCE(SUM(o.total), 0) AS ingresos
+      SELECT o.sucursal,b.nombre AS nombre_sucursal,COUNT(*) AS ordenes,
+        COALESCE(SUM(CASE WHEN o.status <> 'cancelado' THEN o.total ELSE 0 END),0) AS ingresos
       FROM orders o LEFT JOIN branches b ON b.id = o.sucursal
-      GROUP BY o.sucursal, b.nombre ORDER BY ingresos DESC
-    `);
+      ${where} GROUP BY o.sucursal,b.nombre ORDER BY ingresos DESC`,params);
     const [ventasPorDia] = await db.execute(`
-      SELECT DATE(fecha) AS dia, COUNT(*) AS ordenes, COALESCE(SUM(total), 0) AS ingresos
-      FROM orders WHERE fecha >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      GROUP BY dia ORDER BY dia
-    `);
-    res.json({ resumen: stats[0], porSucursal, ventasPorDia });
-  } catch (err) {
-    console.error('Error obteniendo estadísticas:', err.message);
-    res.status(500).json({ error: 'Error obteniendo estadísticas', detalle: err.message });
+      SELECT DATE(o.fecha) AS dia,COUNT(*) AS ordenes,COALESCE(SUM(o.total),0) AS ingresos
+      FROM orders o ${where} AND o.status <> 'cancelado'
+      ${req.query.from || req.query.to ? '' : 'AND o.fecha >= DATE_SUB(NOW(), INTERVAL 30 DAY)'}
+      GROUP BY dia ORDER BY dia`,params);
+    res.json({resumen:withLegacyAliases(stats[0]),porSucursal,ventasPorDia});
+  } catch (error) {
+    console.error('Error obteniendo estadísticas:',error.message);
+    res.status(error.statusCode || 500).json({error:error.statusCode ? error.message : 'No se pudieron consultar las estadísticas.'});
   }
 });
 
@@ -172,28 +163,30 @@ router.get('/mis-pedidos', authMiddleware, async (req, res) => {
 router.get('/', authMiddleware, adminOnly, async (req, res) => {
   const { status, sucursal, from, to, user_id, limit } = req.query;
   try {
+    const filter = buildOrderFilter(req.query);
     const db = await getDB();
     let sql = `
       SELECT o.id, o.user_id, o.total, o.fecha, o.status, o.sucursal,
              u.nombre, u.apellidoP, u.usuario, u.correo
       FROM orders o
       LEFT JOIN users u ON u.id = o.user_id
-      WHERE 1=1
+      ${filter.where}
     `;
-    const params = [];
-    if (status && status !== 'all')     { sql += ' AND o.status = ?';    params.push(status); }
-    if (sucursal && sucursal !== 'all') { sql += ' AND o.sucursal = ?';  params.push(sucursal); }
-    if (from)    { sql += ' AND o.fecha >= ?'; params.push(from); }
-    if (to)      { sql += ' AND o.fecha <= ?'; params.push(to); }
+    const params = [...filter.params];
+    if (status && status !== 'all') {
+      if (status === 'preparando') { sql += " AND o.status IN ('preparando','procesando')"; }
+      else if (status === 'en_camino') { sql += " AND o.status IN ('en_camino','enviado')"; }
+      else { sql += ' AND o.status = ?'; params.push(status); }
+    }
     if (user_id) { sql += ' AND o.user_id = ?'; params.push(user_id); }
     sql += ' ORDER BY o.fecha DESC';
     const limitNum = parseInt(limit);
     if (limitNum > 0) sql += ` LIMIT ${limitNum}`;
     const [rows] = await db.execute(sql, params);
-    res.json(rows);
+    res.json(rows.map(order => ({...order,status:normalizeOrderStatus(order.status)})));
   } catch (err) {
     console.error('Error obteniendo órdenes:', err.message);
-    res.status(500).json({ error: 'Error obteniendo órdenes', detalle: err.message });
+    res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : 'Error obteniendo órdenes' });
   }
 });
 
@@ -217,7 +210,7 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
       `, [req.params.id]);
       items = itemRows;
     } catch (e) { console.warn('order_items no disponible:', e.message); }
-    res.json({ order: order[0], items });
+    res.json({ order: {...order[0],status:normalizeOrderStatus(order[0].status)}, items });
   } catch (err) {
     console.error('Error obteniendo orden:', err.message);
     res.status(500).json({ error: 'Error obteniendo orden', detalle: err.message });

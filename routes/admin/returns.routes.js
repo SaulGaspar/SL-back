@@ -13,8 +13,8 @@ router.use(async (_req, res, next) => {
     await ensureReturnsTable();
     next();
   } catch (error) {
-    console.error('Error preparando devoluciones:', error);
-    res.status(500).json({ error: 'No se pudo preparar el módulo de devoluciones' });
+    console.error('Error preparando cambios:', error);
+    res.status(500).json({ error: 'No se pudo preparar el módulo de cambios' });
   }
 });
 
@@ -45,18 +45,18 @@ router.get('/', async (req, res) => {
     );
     res.json(rows);
   } catch (error) {
-    console.error('Error listando devoluciones admin:', error);
-    res.status(500).json({ error: 'No se pudieron consultar las devoluciones' });
+    console.error('Error listando cambios admin:', error);
+    res.status(500).json({ error: 'No se pudieron consultar los cambios' });
   }
 });
 
 router.patch('/:id/status', async (req, res) => {
   const status = String(req.body.status || '');
   const adminNotes = String(req.body.admin_notes || '').trim() || null;
-  const validStatuses = ['reviewing', 'approved', 'rejected', 'refunded'];
+  const validStatuses = ['reviewing', 'approved', 'rejected'];
 
   if (!validStatuses.includes(status)) {
-    return res.status(400).json({ error: 'Estado de devolución no válido' });
+    return res.status(400).json({ error: 'Estado de cambio no válido' });
   }
 
   try {
@@ -89,17 +89,16 @@ router.patch('/:id/status', async (req, res) => {
       try {
         const labels = {
           reviewing: 'en revisión',
-          approved: 'aprobada',
-          rejected: 'rechazada',
-          refunded: 'reembolsada',
+          approved: 'autorizada',
+          rejected: 'no autorizada',
         };
         await createTransporter().sendMail({
           from: `"SportLike" <${process.env.EMAIL_USER}>`,
           to: row.correo,
-          subject: `Actualización de devolución #${row.id}`,
+          subject: `Actualización de cambio #${row.id}`,
           html: `
             <p>Hola ${escapeHtml(row.nombre || 'cliente')},</p>
-            <p>Tu solicitud de devolución ahora está <strong>${labels[status]}</strong>.</p>
+            <p>Tu solicitud de cambio ahora está <strong>${labels[status]}</strong>.</p>
             ${adminNotes ? `<p><strong>Observaciones:</strong> ${escapeHtml(adminNotes)}</p>` : ''}
             <p>SportLike</p>
           `,
@@ -112,8 +111,8 @@ router.patch('/:id/status', async (req, res) => {
 
     res.json({ message: 'Estado actualizado', warning: mailWarning });
   } catch (error) {
-    console.error('Error actualizando devolución:', error);
-    res.status(500).json({ error: 'No se pudo actualizar la devolución' });
+    console.error('Error actualizando cambio:', error);
+    res.status(500).json({ error: 'No se pudo actualizar el cambio' });
   }
 });
 

@@ -1,10 +1,12 @@
 const express = require('express');
 const { getDB } = require('../../config/db');
 const { ensurePromotionsTable } = require('../../helpers/promotionsStore');
+const { PROMOTIONS_ENABLED } = require('../../helpers/features');
 
 const router = express.Router();
 
 router.get('/active', async (_req, res) => {
+  if (!PROMOTIONS_ENABLED) return res.json([]);
   try {
     await ensurePromotionsTable();
     const db = await getDB();

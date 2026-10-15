@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 
 const { getDB }                      = require('../../config/db');
+const { buildOrderFilter } = require('../../helpers/orderStats');
 const { authMiddleware, adminOnly }  = require('../../middlewares/auth');
 
 // ================================
@@ -23,7 +24,7 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
       params.push(branch);
     }
     if (low_stock === 'true') {
-      sql += ' AND estado = \'bajo_stock\'';
+      sql += " AND estado IN ('bajo_stock','sin_stock')";
     }
 
     sql += ' ORDER BY sucursal, producto';
@@ -42,6 +43,10 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
 
 router.get('/stats', authMiddleware, adminOnly, async (req, res) => {
   try {
+    const filter = buildOrderFilter({branch:req.query.branch});
+    const branchId = filter.params[0];
+    const where = branchId ? 'WHERE branch_id = ?' : '';
+    const params = branchId ? [branchId] : [];
     const db = await getDB();
 
     const [stats] = await db.execute(`
@@ -52,8 +57,8 @@ router.get('/stats', authMiddleware, adminOnly, async (req, res) => {
         SUM(CASE WHEN estado = 'sin_stock'  THEN 1 ELSE 0 END)             AS productos_sin_stock,
         SUM(CASE WHEN estado = 'bajo_stock' THEN 1 ELSE 0 END)             AS productos_bajo_stock,
         SUM(valor_stock)                                                    AS valor_inventario
-      FROM v_inventario_completo
-    `);
+      FROM v_inventario_completo ${where}
+    `, params);
 
     const [porSucursal] = await db.execute(`
       SELECT
@@ -61,15 +66,15 @@ router.get('/stats', authMiddleware, adminOnly, async (req, res) => {
         COUNT(DISTINCT product_id) AS productos,
         SUM(stock)                 AS stock_total,
         SUM(valor_stock)           AS valor_inventario
-      FROM v_inventario_completo
+      FROM v_inventario_completo ${where}
       GROUP BY branch_id, sucursal
       ORDER BY valor_inventario DESC
-    `);
+    `, params);
 
     res.json({ general: stats[0], porSucursal });
   } catch (err) {
     console.error('Error obteniendo estadísticas de inventario:', err);
-    res.status(500).json({ error: 'Error obteniendo estadísticas' });
+    res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : 'Error obteniendo estadísticas' });
   }
 });
 

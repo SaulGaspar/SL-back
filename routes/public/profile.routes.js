@@ -11,13 +11,15 @@ router.get('/me', authMiddleware, async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute(
-      'SELECT id, nombre, apellidoP, apellidoM, usuario, correo, rol FROM users WHERE id = ?',
+      'SELECT id, nombre, apellidoP, apellidoM, telefono, usuario, correo, rol FROM users WHERE id = ?',
       [req.user.id]
     );
 
     if (rows.length === 0) return res.status(404).json({ error: 'Usuario no existe' });
 
-    res.json(rows[0]);
+    const user = rows[0];
+    if (req.user.proveedor === 'google' && req.user.rol !== 'admin') user.rol = req.user.rol;
+    res.json(user);
   } catch (err) {
     console.error('Error obteniendo usuario:', err);
     res.status(500).json({ error: 'Error obteniendo usuario' });
@@ -27,6 +29,14 @@ router.get('/me', authMiddleware, async (req, res) => {
 
 router.post('/update-profile', authMiddleware, async (req, res) => {
   const { nombre, apellidoP, apellidoM, telefono, usuario } = req.body;
+
+  if ([nombre, apellidoP, usuario].some(value => typeof value !== 'string' || !value.trim()) ||
+      [apellidoM, telefono].some(value => value != null && typeof value !== 'string')) {
+    return res.status(400).json({ error: 'Revisa los datos del perfil' });
+  }
+  if (telefono && !/^\d{10}$/.test(telefono.trim())) {
+    return res.status(400).json({ error: 'El teléfono debe tener 10 dígitos' });
+  }
 
   if (!nombre || !apellidoP || !usuario)
     return res.status(400).json({ error: 'Faltan campos requeridos' });
@@ -55,7 +65,11 @@ router.post('/update-profile', authMiddleware, async (req, res) => {
       [nombreSafe, apellidoPSafe, apellidoMSafe, telefonoSafe, usuarioSafe, req.user.id]
     );
 
-    res.json({ message: 'Perfil actualizado correctamente' });
+    const [[user]] = await db.execute(
+      'SELECT id, nombre, apellidoP, apellidoM, telefono, usuario, correo, rol FROM users WHERE id = ?',
+      [req.user.id]
+    );
+    res.json({ message: 'Perfil actualizado correctamente', user });
   } catch (err) {
     console.error('Error actualizando perfil:', err);
     res.status(500).json({ error: 'Error actualizando perfil' });

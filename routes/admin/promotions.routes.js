@@ -1,4 +1,5 @@
 const express = require('express');
+const { PROMOTIONS_ENABLED } = require('../../helpers/features');
 const { getDB } = require('../../config/db');
 const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { createTransporter } = require('../../helpers/mailer');
@@ -12,6 +13,10 @@ const {
 const router = express.Router();
 
 router.use(authMiddleware, adminOnly);
+router.use((_req, res, next) => {
+  if (!PROMOTIONS_ENABLED) return res.status(503).json({ error: 'Las promociones están pausadas temporalmente', code: 'PROMOTIONS_PAUSED' });
+  next();
+});
 router.use(async (_req, res, next) => {
   try {
     await ensurePromotionsTable();

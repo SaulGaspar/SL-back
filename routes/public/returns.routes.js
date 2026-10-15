@@ -11,8 +11,8 @@ router.use(async (_req, res, next) => {
     await ensureReturnsTable();
     next();
   } catch (error) {
-    console.error('Error preparando devoluciones:', error);
-    res.status(500).json({ error: 'No se pudo preparar el módulo de devoluciones' });
+    console.error('Error preparando cambios:', error);
+    res.status(500).json({ error: 'No se pudo preparar el módulo de cambios' });
   }
 });
 
@@ -55,8 +55,8 @@ router.get('/', async (req, res) => {
     );
     res.json(rows);
   } catch (error) {
-    console.error('Error consultando devoluciones:', error);
-    res.status(500).json({ error: 'No se pudieron consultar las devoluciones' });
+    console.error('Error consultando cambios:', error);
+    res.status(500).json({ error: 'No se pudieron consultar los cambios' });
   }
 });
 
@@ -73,7 +73,7 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'Selecciona un pedido válido' });
   }
   if (!validReasons.includes(reason)) {
-    return res.status(400).json({ error: 'Selecciona el motivo de la devolución' });
+    return res.status(400).json({ error: 'Selecciona el motivo del cambio' });
   }
   if (details.length < 10 || details.length > 1500) {
     return res.status(400).json({
@@ -107,7 +107,7 @@ router.post('/', async (req, res) => {
     if (!order) return res.status(404).json({ error: 'Pedido no encontrado' });
     if (order.status !== 'entregado') {
       return res.status(400).json({
-        error: 'Solo se puede solicitar devolución de pedidos entregados',
+        error: 'Solo se puede solicitar un cambio de pedidos entregados',
       });
     }
 
@@ -130,17 +130,17 @@ router.post('/', async (req, res) => {
       [result.insertId]
     );
     res.status(201).json({
-      message: 'Solicitud registrada. Será revisada con la empresa.',
+      message: 'Solicitud de cambio registrada. Nuestro equipo la revisará.',
       return_request: created,
     });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({
-        error: 'Este pedido ya tiene una solicitud de devolución',
+        error: 'Este pedido ya tiene una solicitud de cambio',
       });
     }
-    console.error('Error registrando devolución:', error);
-    res.status(500).json({ error: 'No se pudo registrar la devolución' });
+    console.error('Error registrando cambio:', error);
+    res.status(500).json({ error: 'No se pudo registrar el cambio' });
   }
 });
 

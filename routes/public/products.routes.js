@@ -15,7 +15,7 @@ router.get('/', async (req, res) => {
 
     let sql = `
       SELECT 
-        p.id, p.nombre, p.marca, p.descripcion, p.precio,
+        p.id, p.nombre, p.marca, p.descripcion, p.especificaciones, p.precio,
         p.categoria, p.imagen, p.talla, p.colores,
         COALESCE(SUM(i.stock), 0) AS stock_total
       FROM products p
@@ -81,6 +81,12 @@ router.get('/marcas', async (req, res) => {
 // ⚠️ ANTES de GET /:id para que Express no lo interprete como parámetro
 // =====================================================================
 router.get('/prediccion-publica', async (req, res) => {
+  return res.status(410).json({
+    error: 'Las predicciones internas ya no están disponibles públicamente.',
+  });
+
+  /* Las consultas históricas se conservan temporalmente debajo para facilitar
+     una futura ruta administrativa; no se ejecutan por el return anterior. */
   try {
     const db = await getDB();
     const DIAS_PERIODO = 30;
@@ -202,7 +208,7 @@ router.get('/:id', async (req, res) => {
     const db = await getDB();
     const [product] = await db.execute(`
       SELECT 
-        p.id, p.nombre, p.marca, p.descripcion, p.precio,
+        p.id, p.nombre, p.marca, p.descripcion, p.especificaciones, p.precio,
         p.categoria, p.imagen, p.talla, p.colores,
         COALESCE(SUM(i.stock), 0) AS stock_total
       FROM products p

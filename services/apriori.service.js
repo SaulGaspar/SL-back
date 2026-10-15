@@ -141,4 +141,60 @@ async function getRecommendations(db, productId, limit = 4) {
   return rows.map(row => ({ ...row, precio: Number(row.precio), stock_total: Number(row.stock_total), support: Number(row.support), confidence: Number(row.confidence), lift: Number(row.lift), pair_count: Number(row.pair_count) }));
 }
 
-module.exports = { DEFAULTS, buildAprioriRules, getRecommendations };
+function normalizeProductIds(values) {
+  if (!Array.isArray(values)) return [];
+  const ids = [];
+  for (const value of values) {
+    const raw = typeof value === 'object' && value !== null
+      ? value.product_id ?? value.productId ?? value.id
+      : value;
+    const id = Number(raw);
+    if (Number.isInteger(id) && id > 0 && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+async function getCartRecommendations(db, productIds = [], limit = 6) {
+  const antecedents = normalizeProductIds(productIds);
+  const safeLimit = Math.min(Math.max(Number(limit) || 6, 1), 12);
+  if (!antecedents.length) return [];
+
+  const cartSet = new Set(antecedents);
+  const scored = new Map();
+
+  for (const productId of antecedents) {
+    const candidates = await getRecommendations(db, productId, safeLimit);
+    for (const candidate of candidates) {
+      const candidateId = Number(candidate.id);
+      if (cartSet.has(candidateId)) continue;
+
+      const current = scored.get(candidateId) || {
+        ...candidate,
+        antecedents: [],
+        score: 0,
+        pair_count: 0,
+        confidence: 0,
+        lift: 0,
+      };
+
+      current.antecedents.push({
+        product_id: productId,
+        confidence: candidate.confidence,
+        lift: candidate.lift,
+        pair_count: candidate.pair_count,
+      });
+      current.score += (candidate.lift || 0) * (candidate.confidence || 0) * Math.max(candidate.pair_count || 0, 1);
+      current.pair_count += candidate.pair_count || 0;
+      current.confidence = Math.max(current.confidence, candidate.confidence || 0);
+      current.lift = Math.max(current.lift, candidate.lift || 0);
+      scored.set(candidateId, current);
+    }
+  }
+
+  return [...scored.values()]
+    .sort((a, b) => b.score - a.score || b.lift - a.lift || b.confidence - a.confidence || b.pair_count - a.pair_count)
+    .slice(0, safeLimit)
+    .map(({ score, ...item }) => item);
+}
+
+module.exports = { DEFAULTS, buildAprioriRules, getRecommendations, getCartRecommendations };

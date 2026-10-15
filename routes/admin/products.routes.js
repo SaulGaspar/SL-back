@@ -6,6 +6,43 @@ const { authMiddleware, adminOnly }  = require('../../middlewares/auth');
 const { sanitizeInput }              = require('../../helpers/validators');
 const { sanitizeLog }                = require('../../helpers/sanitizeLog');
 
+function normalizeSpecifications(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+
+  let parsed = value;
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      parsed = value.split(/\r?\n/).reduce((result, line) => {
+        const separator = line.indexOf(':');
+        if (separator === -1) return result;
+        const key = line.slice(0, separator).trim();
+        const detail = line.slice(separator + 1).trim();
+        if (key && detail) result[key] = detail;
+        return result;
+      }, {});
+    }
+  }
+
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error('Las especificaciones deben tener formato "Campo: detalle".');
+  }
+
+  const clean = {};
+  for (const [key, detail] of Object.entries(parsed)) {
+    const cleanKey = sanitizeInput(String(key)).trim().slice(0, 60);
+    const cleanDetail = sanitizeInput(String(detail)).trim().slice(0, 300);
+    if (cleanKey && cleanDetail) clean[cleanKey] = cleanDetail;
+  }
+
+  if (Object.keys(clean).length > 12) {
+    throw new Error('Puedes agregar hasta 12 especificaciones por producto.');
+  }
+
+  return Object.keys(clean).length ? JSON.stringify(clean) : null;
+}
+
 // ================================
 // GET /api/admin/products/stats/summary
 // ================================
@@ -56,7 +93,7 @@ router.get('/search', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    let sql    = 'SELECT * FROM v_productos_stock WHERE 1=1';
+    let sql    = 'SELECT v.*, p.especificaciones FROM v_productos_stock v INNER JOIN products p ON p.id = v.id WHERE 1=1';
     const params = [];
 
     if (q) {
@@ -120,8 +157,10 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
     const [rows] = await db.execute(`
-      SELECT * FROM v_productos_stock
-      ORDER BY id DESC
+      SELECT v.*, p.especificaciones
+      FROM v_productos_stock v
+      INNER JOIN products p ON p.id = v.id
+      ORDER BY v.id DESC
     `);
     res.json(rows);
   } catch (err) {
@@ -139,7 +178,7 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
     const db = await getDB();
 
     const [rows] = await db.execute(
-      'SELECT * FROM v_productos_stock WHERE id = ?',
+      'SELECT v.*, p.especificaciones FROM v_productos_stock v INNER JOIN products p ON p.id = v.id WHERE v.id = ?',
       [req.params.id]
     );
     if (rows.length === 0)
@@ -302,7 +341,7 @@ router.patch('/images/reorder', authMiddleware, adminOnly, async (req, res) => {
 // POST /api/admin/products
 // ================================
 router.post('/', authMiddleware, adminOnly, async (req, res) => {
-  const { nombre, marca, descripcion, precio, categoria, imagen, talla, colores, inventario } = req.body;
+  const { nombre, marca, descripcion, especificaciones, precio, categoria, imagen, talla, colores, inventario } = req.body;
 
   if (!nombre || !precio)
     return res.status(400).json({ error: 'Nombre y precio obligatorios' });
@@ -315,14 +354,20 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
   const categoriaSafe   = categoria   ? sanitizeInput(categoria)   : null;
   const tallaSafe       = talla       ? sanitizeInput(talla)       : null;
   const coloresSafe     = colores     ? sanitizeInput(colores)     : null;
+  let especificacionesSafe;
+  try {
+    especificacionesSafe = normalizeSpecifications(especificaciones);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   try {
     const db = await getDB();
 
     const [result] = await db.execute(`
-      INSERT INTO products (nombre, marca, descripcion, precio, categoria, imagen, talla, colores, activo, createdAt, updatedAt)
-      VALUES (?,?,?,?,?,?,?,?,1,NOW(),NOW())
-    `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe]);
+      INSERT INTO products (nombre, marca, descripcion, especificaciones, precio, categoria, imagen, talla, colores, activo, createdAt, updatedAt)
+      VALUES (?,?,?,?,?,?,?,?,?,1,NOW(),NOW())
+    `, [nombreSafe, marcaSafe, descripcionSafe, especificacionesSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe]);
 
     const productId = result.insertId;
 
@@ -357,7 +402,7 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
 // PUT /api/admin/products/:id
 // ================================
 router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
-  const { nombre, marca, descripcion, precio, categoria, imagen, talla, colores, activo } = req.body;
+  const { nombre, marca, descripcion, especificaciones, precio, categoria, imagen, talla, colores, activo } = req.body;
 
   if (!nombre || precio === undefined)
     return res.status(400).json({ error: 'Nombre y precio son obligatorios' });
@@ -370,6 +415,12 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
   const categoriaSafe   = categoria   ? sanitizeInput(categoria)   : null;
   const tallaSafe       = talla       ? sanitizeInput(talla)       : null;
   const coloresSafe     = colores     ? sanitizeInput(colores)     : null;
+  let especificacionesSafe;
+  try {
+    especificacionesSafe = normalizeSpecifications(especificaciones);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   try {
     const db = await getDB();
@@ -379,10 +430,10 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
 
     await db.execute(`
       UPDATE products
-      SET nombre=?, marca=?, descripcion=?, precio=?, categoria=?,
+      SET nombre=?, marca=?, descripcion=?, especificaciones=?, precio=?, categoria=?,
           imagen=?, talla=?, colores=?, activo=?, updatedAt=NOW()
       WHERE id=?
-    `, [nombreSafe, marcaSafe, descripcionSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe, activo, req.params.id]);
+    `, [nombreSafe, marcaSafe, descripcionSafe, especificacionesSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe, activo, req.params.id]);
 
     if (imagen) {
       const [[first]] = await db.execute(

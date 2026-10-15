@@ -3,30 +3,35 @@
   "version": "1.0.0",
   "main": "server.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
     "apriori:build": "node scripts/build-apriori.js",
     "repurchase:build": "node scripts/build-repurchase.js",
-    "segments:build": "node scripts/build-customer-segments.js"
+    "segments:build": "node scripts/build-customer-segments.js",
+    "check:stats": "node scripts/check-admin-stats.cjs",
+    "check:login": "node scripts/check-login-promotions.cjs",
+    "check:profile": "node scripts/check-profile.cjs",
+    "check:mailer": "node scripts/check-mailer.cjs",
+    "check:google": "node scripts/check-google-auth.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.98.0",
     "bcryptjs": "^2.4.3",
-    "body-parser": "^1.20.2",
+    "body-parser": "^1.20.8",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
     "dotenv": "^16.0.3",
-    "express": "^4.18.2",
-    "express-rate-limit": "^8.2.1",
+    "express": "^4.22.3",
+    "express-rate-limit": "^8.7.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.0",
     "mercadopago": "^3.2.0",
-    "mysql2": "^3.3.0",
+    "mysql2": "^3.24.6",
     "node-cron": "^4.2.1",
-    "nodemailer": "^6.9.3",
+    "nodemailer": "^10.1.1",
     "passport": "^0.6.0",
     "passport-google-oauth20": "^2.0.0"
   }
