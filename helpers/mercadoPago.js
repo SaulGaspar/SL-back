@@ -53,8 +53,10 @@ function hashCartItems(items) {
     .map((item) => ({
       product_id: Number(item.product_id),
       cantidad: Number(item.cantidad),
+      ...(item.talla != null ? {talla:String(item.talla).trim()} : {}),
+      ...(item.color != null ? {color:String(item.color).trim()} : {}),
     }))
-    .sort((a, b) => a.product_id - b.product_id);
+    .sort((a, b) => a.product_id - b.product_id || (a.talla||'').localeCompare(b.talla||'') || (a.color||'').localeCompare(b.color||''));
 
   return crypto
     .createHash('sha256')

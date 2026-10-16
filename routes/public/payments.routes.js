@@ -12,6 +12,7 @@ const {
   hashCartItems,
 } = require('../../helpers/mercadoPago');
 const { createPaidOrder } = require('../../helpers/createPaidOrder');
+const {normalizeItems: normalizeVariants,requireVariantColumns,validateSelection}=require('../../helpers/orderVariants');
 
 const router = express.Router();
 const SHIPPING_COST = 75;
@@ -21,39 +22,9 @@ function cleanBaseUrl(value, fallback) {
   return String(value || fallback).replace(/\/+$/, '');
 }
 
-function normalizeItems(rawItems) {
-  if (!Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > 50) {
-    const error = new Error('El carrito no contiene productos válidos');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const merged = new Map();
-  for (const item of rawItems) {
-    const productId = Number(item.product_id);
-    const quantity = Number(item.cantidad);
-    if (!Number.isInteger(productId) || productId <= 0) {
-      const error = new Error('Hay un producto inválido en el carrito');
-      error.statusCode = 400;
-      throw error;
-    }
-    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 20) {
-      const error = new Error('La cantidad solicitada no es válida');
-      error.statusCode = 400;
-      throw error;
-    }
-    merged.set(productId, (merged.get(productId) || 0) + quantity);
-  }
-
-  return [...merged.entries()].map(([product_id, cantidad]) => ({
-    product_id,
-    cantidad,
-  }));
-}
-
 router.post('/preference', authMiddleware, async (req, res) => {
   try {
-    const items = normalizeItems(req.body.items);
+    const items = normalizeVariants(req.body.items);
     const addressId = Number(req.body.direccion_id);
 
     if (!Number.isInteger(addressId) || addressId <= 0) {
@@ -61,6 +32,7 @@ router.post('/preference', authMiddleware, async (req, res) => {
     }
 
     const db = await getDB();
+    await requireVariantColumns(db);
     const [[address]] = await db.execute(
       'SELECT id FROM direcciones WHERE id = ? AND usuario_id = ?',
       [addressId, req.user.id]
@@ -71,13 +43,13 @@ router.post('/preference', authMiddleware, async (req, res) => {
 
     const placeholders = items.map(() => '?').join(',');
     const [products] = await db.execute(
-      `SELECT id, nombre, descripcion, precio
+      `SELECT id, nombre, descripcion, precio, talla, colores
        FROM products
        WHERE id IN (${placeholders}) AND activo = 1`,
       items.map((item) => item.product_id)
     );
 
-    if (products.length !== items.length) {
+    if (products.length !== new Set(items.map(item=>item.product_id)).size) {
       return res.status(400).json({
         error: 'Uno o más productos ya no se encuentran disponibles',
       });
@@ -94,9 +66,9 @@ router.post('/preference', authMiddleware, async (req, res) => {
     const stockMap = new Map(
       stockRows.map((row) => [Number(row.product_id), Number(row.max_stock)])
     );
-    const unavailable = items.find(
-      (item) => (stockMap.get(item.product_id) || 0) < item.cantidad
-    );
+    const quantities=new Map();
+    for(const item of items){validateSelection(item,products.find(product=>Number(product.id)===item.product_id));quantities.set(item.product_id,(quantities.get(item.product_id)||0)+item.cantidad);}
+    const unavailable = items.find(item=>(stockMap.get(item.product_id)||0)<quantities.get(item.product_id));
     if (unavailable) {
       const product = products.find(
         (candidate) => Number(candidate.id) === unavailable.product_id
@@ -112,7 +84,7 @@ router.post('/preference', authMiddleware, async (req, res) => {
       return {
         id: String(product.id),
         title: String(product.nombre).slice(0, 120),
-        description: String(product.descripcion || 'Producto SportLike').slice(0, 250),
+        description: [product.descripcion,item.talla && `Talla: ${item.talla}`,item.color && `Color: ${item.color}`].filter(Boolean).join(' · ').slice(0,250),
         currency_id: 'MXN',
         quantity: item.cantidad,
         unit_price: Number(product.precio),

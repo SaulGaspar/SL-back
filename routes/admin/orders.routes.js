@@ -135,7 +135,7 @@ router.get('/mis-pedidos', authMiddleware, async (req, res) => {
       for (const subId of grupo.subIds) {
         try {
           const [items] = await db.execute(`
-            SELECT oi.cantidad, oi.subtotal,
+            SELECT oi.*,
                    p.nombre, p.imagen, p.categoria, p.marca
             FROM order_items oi
             JOIN products p ON p.id = oi.product_id

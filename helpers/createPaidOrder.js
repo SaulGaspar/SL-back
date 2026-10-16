@@ -1,34 +1,12 @@
 const { getDB } = require('../config/db');
 const { hashCartItems } = require('./mercadoPago');
+const {normalizeItems:normalizeVariants,requireVariantColumns}=require('./orderVariants');
 
 function orderError(message, statusCode = 400, extra = {}) {
   const error = new Error(message);
   error.statusCode = statusCode;
   Object.assign(error, extra);
   return error;
-}
-
-function normalizeItems(rawItems) {
-  if (!Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > 50) {
-    throw orderError('El pedido no tiene productos válidos');
-  }
-
-  const merged = new Map();
-  for (const item of rawItems) {
-    const productId = Number(item.product_id);
-    const quantity = Number(item.cantidad);
-    if (!Number.isInteger(productId) || productId <= 0) {
-      throw orderError('El pedido contiene un producto inválido');
-    }
-    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 20) {
-      throw orderError('El pedido contiene una cantidad inválida');
-    }
-    merged.set(productId, (merged.get(productId) || 0) + quantity);
-  }
-
-  return [...merged.entries()]
-    .map(([product_id, cantidad]) => ({ product_id, cantidad }))
-    .sort((a, b) => a.product_id - b.product_id);
 }
 
 function paymentOwnerId(payment) {
@@ -58,7 +36,7 @@ function existingOrderResponse(existingOrders, payment) {
 }
 
 async function createPaidOrder({ payment, userId, addressId, items: rawItems }) {
-  const items = normalizeItems(rawItems);
+  const items = normalizeVariants(rawItems);
 
   if (!payment?.id || payment.status !== 'approved') {
     throw orderError('El pago todavía no está aprobado', 402, {
@@ -108,6 +86,8 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
       return existingOrderResponse(existingOrders, payment);
     }
 
+    if(items.some(item=>item.talla!=null||item.color!=null))await requireVariantColumns(conn);
+
     await conn.beginTransaction();
     transactionStarted = true;
 
@@ -120,8 +100,11 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
     }
 
     const itemsWithBranch = [];
+    const totals=new Map(),allocations=new Map();
+    items.forEach(item=>totals.set(item.product_id,(totals.get(item.product_id)||0)+item.cantidad));
     for (const item of items) {
-      const [rows] = await conn.execute(
+      let rows=allocations.get(item.product_id);
+      if(!rows){[rows] = await conn.execute(
         `SELECT i.branch_id, b.nombre, i.stock, p.nombre AS product_name, p.precio
          FROM inventory i
          JOIN branches b ON b.id = i.branch_id
@@ -133,8 +116,8 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
          ORDER BY i.stock DESC
          LIMIT 1
          FOR UPDATE`,
-        [item.product_id, item.cantidad]
-      );
+        [item.product_id, totals.get(item.product_id)]
+      );allocations.set(item.product_id,rows);}
 
       if (rows.length === 0) {
         const [[product]] = await conn.execute(
@@ -199,7 +182,9 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
       orderIds.push({ orderId, sucursal: group.branch_nombre });
 
       for (const item of group.items) {
-        await conn.execute(
+        if(item.talla!=null||item.color!=null){
+          await conn.execute('INSERT INTO order_items (order_id, product_id, cantidad, subtotal, talla, color) VALUES (?, ?, ?, ?, ?, ?)',[orderId,item.product_id,item.cantidad,item.subtotal,item.talla||null,item.color||null]);
+        }else await conn.execute(
           `INSERT INTO order_items (order_id, product_id, cantidad, subtotal)
            VALUES (?, ?, ?, ?)`,
           [orderId, item.product_id, item.cantidad, item.subtotal]
@@ -245,4 +230,4 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
   }
 }
 
-module.exports = { createPaidOrder, normalizeItems };
+module.exports = { createPaidOrder, normalizeItems:normalizeVariants };
