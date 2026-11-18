@@ -1,6 +1,8 @@
 const { getDB } = require('../config/db');
 const { hashCartItems } = require('./mercadoPago');
 const {normalizeItems:normalizeVariants,requireVariantColumns}=require('./orderVariants');
+const {variantsEnabled,allocateVariant,deductVariant}=require('./variantInventory');
+const {writeAudit}=require('./audit');
 
 function orderError(message, statusCode = 400, extra = {}) {
   const error = new Error(message);
@@ -36,6 +38,8 @@ function existingOrderResponse(existingOrders, payment) {
 }
 
 async function createPaidOrder({ payment, userId, addressId, items: rawItems }) {
+  addressId=Number(addressId);
+  if(!Number.isSafeInteger(addressId)||addressId<=0)throw orderError('Selecciona una dirección válida.');
   const items = normalizeVariants(rawItems);
 
   if (!payment?.id || payment.status !== 'approved') {
@@ -103,7 +107,9 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
     const totals=new Map(),allocations=new Map();
     items.forEach(item=>totals.set(item.product_id,(totals.get(item.product_id)||0)+item.cantidad));
     for (const item of items) {
-      let rows=allocations.get(item.product_id);
+      let rows;
+      if(variantsEnabled())rows=[await allocateVariant(conn,item)];
+      else {rows=allocations.get(item.product_id);
       if(!rows){[rows] = await conn.execute(
         `SELECT i.branch_id, b.nombre, i.stock, p.nombre AS product_name, p.precio
          FROM inventory i
@@ -117,7 +123,7 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
          LIMIT 1
          FOR UPDATE`,
         [item.product_id, totals.get(item.product_id)]
-      );allocations.set(item.product_id,rows);}
+      );allocations.set(item.product_id,rows);}}
 
       if (rows.length === 0) {
         const [[product]] = await conn.execute(
@@ -136,7 +142,11 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
         subtotal: Number(rows[0].precio) * item.cantidad,
         branch_id: rows[0].branch_id,
         branch_nombre: rows[0].nombre,
+        variant_id:rows[0].variant_id,
+        inventory_id:rows[0].inventory_id,
+        available_stock:Number(rows[0].stock),
       });
+      if(!variantsEnabled())rows[0].stock=Number(rows[0].stock)-item.cantidad;
     }
 
     const productsTotal = itemsWithBranch.reduce(
@@ -182,6 +192,7 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
       orderIds.push({ orderId, sucursal: group.branch_nombre });
 
       for (const item of group.items) {
+        if(item.variant_id)await deductVariant(conn,item);
         if(item.talla!=null||item.color!=null){
           await conn.execute('INSERT INTO order_items (order_id, product_id, cantidad, subtotal, talla, color) VALUES (?, ?, ?, ?, ?, ?)',[orderId,item.product_id,item.cantidad,item.subtotal,item.talla||null,item.color||null]);
         }else await conn.execute(
@@ -189,13 +200,19 @@ async function createPaidOrder({ payment, userId, addressId, items: rawItems }) 
            VALUES (?, ?, ?, ?)`,
           [orderId, item.product_id, item.cantidad, item.subtotal]
         );
-        await conn.execute(
+        const [changed]=await conn.execute(
           `UPDATE inventory
-           SET stock = GREATEST(stock - ?, 0)
-           WHERE product_id = ? AND branch_id = ?`,
-          [item.cantidad, item.product_id, group.branch_id]
+           SET stock = stock - ?
+           WHERE product_id = ? AND branch_id = ? AND stock >= ?`,
+          [item.cantidad, item.product_id, group.branch_id,item.cantidad]
         );
+        if(changed.affectedRows!==1)throw orderError('La disponibilidad cambió. Contacta a SportLike para revisar el pago.',409);
+        const stockField=item.variant_id?'stock_variante':'stock';
+        await writeAudit(conn,{actor:{id:userId},action:'salida_por_venta',entity:'inventario',id:item.inventory_id,
+          before:{product_id:item.product_id,sucursal:group.branch_id,talla:item.talla||null,color:item.color||null,[stockField]:item.available_stock},
+          after:{pedido_id:orderId,[stockField]:item.available_stock-item.cantidad,movimiento:-item.cantidad}});
       }
+      await writeAudit(conn,{actor:{id:userId},action:'pedido_pagado',entity:'pedidos',id:orderId,after:{pago_id:String(payment.id),sucursal:group.branch_id,items:group.items.map(item=>({product_id:item.product_id,cantidad:item.cantidad,talla:item.talla||null,color:item.color||null}))}});
     }
 
     await conn.commit();

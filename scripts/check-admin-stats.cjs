@@ -14,6 +14,7 @@ const orders=[
 ];
 let calls=[];
 const db={execute:async(sql,params=[])=>{
+ if(sql.startsWith('SELECT id, rol, verificado, lockedUntil'))return [[{id:1,rol:'admin',verificado:1}]];
  calls.push({sql,params});
  if(sql==='SELECT id,nombre FROM branches ORDER BY nombre')return [[{id:1,nombre:'Centro'},{id:2,nombre:'Norte'}]];
  if(sql.includes('v_inventario_completo')){

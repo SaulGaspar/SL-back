@@ -7,6 +7,8 @@ const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { createTransporter } = require('../../helpers/mailer');
 const { sanitizeInput, validateUsername, generarPasswordAleatoria } = require('../../helpers/validators');
 const { sanitizeLog } = require('../../helpers/sanitizeLog');
+const { auditedTransaction } = require('../../helpers/audit');
+const { problem } = require('../../helpers/variantInventory');
 
 // GET /api/admin/users/stats/summary
 router.get('/stats/summary', authMiddleware, adminOnly, async (req, res) => {
@@ -101,6 +103,10 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
   if (!nombre || !apellidoP || !usuario)  return res.status(400).json({ error: 'Faltan campos requeridos' });
   if (!validateUsername(usuario))          return res.status(400).json({ error: 'Usuario inválido' });
   if (rol && !['admin', 'cliente'].includes(rol)) return res.status(400).json({ error: 'Rol inválido' });
+  if(verificado!==undefined&&![0,1].includes(Number(verificado)))return res.status(400).json({error:'Estado de verificación inválido.'});
+  if(Number(req.params.id)===Number(req.user.id)&&((rol&&rol!=='admin')||(verificado!==undefined&&Number(verificado)!==1))){
+    return res.status(400).json({error:'No puedes quitarte tus propios permisos de administrador ni desactivar tu propia cuenta.'});
+  }
 
   const nombreSafe    = sanitizeInput(nombre);
   const apellidoPSafe = sanitizeInput(apellidoP);
@@ -111,25 +117,28 @@ router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    const [exists] = await db.execute('SELECT id FROM users WHERE id = ?', [req.params.id]);
-    if (exists.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
+    await auditedTransaction(db,{actor:req.user,action:'actualizar_permisos',entity:'usuarios',id:Number(req.params.id)},async conn=>{
+    const [exists] = await conn.execute('SELECT id, rol, verificado FROM users WHERE id = ? FOR UPDATE', [req.params.id]);
+    if (exists.length === 0) problem('Usuario no encontrado',404);
 
-    const [duplicates] = await db.execute(
+    const [duplicates] = await conn.execute(
       'SELECT id FROM users WHERE (usuario = ? OR telefono = ?) AND id != ?',
       [usuarioSafe, telefonoSafe, req.params.id]
     );
-    if (duplicates.length > 0) return res.status(400).json({ error: 'Usuario o teléfono ya registrado' });
+    if (duplicates.length > 0) problem('Usuario o teléfono ya registrado');
 
-    await db.execute(`
+    await conn.execute(`
       UPDATE users SET nombre=?, apellidoP=?, apellidoM=?, telefono=?, usuario=?, rol=?, verificado=?, updatedAt=NOW()
       WHERE id=?
-    `, [nombreSafe, apellidoPSafe, apellidoMSafe, telefonoSafe, usuarioSafe, rol || 'cliente', verificado !== undefined ? verificado : 1, req.params.id]);
+    `, [nombreSafe, apellidoPSafe, apellidoMSafe, telefonoSafe, usuarioSafe, rol || exists[0].rol, verificado !== undefined ? Number(verificado) : exists[0].verificado, req.params.id]);
+    return {before:{rol:exists[0].rol,verificado:exists[0].verificado},after:{rol:rol||exists[0].rol,verificado:verificado!==undefined?Number(verificado):exists[0].verificado}};
+    });
 
     console.log(`✅ Usuario actualizado: ${sanitizeLog(usuarioSafe)} (ID: ${sanitizeLog(req.params.id)}) por admin ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Usuario actualizado correctamente' });
   } catch (err) {
     console.error('Error actualizando usuario:', err);
-    res.status(500).json({ error: 'Error actualizando usuario' });
+    res.status(err.statusCode||500).json({ error:err.statusCode?err.message:'Error actualizando usuario' });
   }
 });
 
@@ -142,16 +151,16 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
       return res.status(400).json({ error: 'No puedes eliminar tu propia cuenta' });
     }
 
-    const [exists] = await db.execute('SELECT id, usuario FROM users WHERE id = ?', [req.params.id]);
-    if (exists.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-    await db.execute('UPDATE users SET verificado = 0, updatedAt = NOW() WHERE id = ?', [req.params.id]);
-
-    console.log(`⚠️ Usuario desactivado: ${sanitizeLog(exists[0].usuario)} (ID: ${sanitizeLog(req.params.id)}) por admin ${sanitizeLog(req.user.usuario)}`);
+    await auditedTransaction(db,{actor:req.user,action:'desactivar_cuenta',entity:'usuarios',id:Number(req.params.id)},async conn=>{
+      const [[user]]=await conn.execute('SELECT id,rol,verificado FROM users WHERE id=? FOR UPDATE',[req.params.id]);
+      if(!user)problem('Usuario no encontrado',404);
+      await conn.execute('UPDATE users SET verificado = 0, updatedAt = NOW() WHERE id = ?', [req.params.id]);
+      return {before:{rol:user.rol,verificado:user.verificado},after:{rol:user.rol,verificado:0}};
+    });
     res.json({ message: 'Usuario desactivado correctamente' });
   } catch (err) {
     console.error('Error eliminando usuario:', err);
-    res.status(500).json({ error: 'Error eliminando usuario' });
+    res.status(err.statusCode||500).json({ error:err.statusCode?err.message:'Error eliminando usuario' });
   }
 });
 

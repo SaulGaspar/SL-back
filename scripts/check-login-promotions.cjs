@@ -9,6 +9,7 @@ process.env.GOOGLE_CLIENT_SECRET = 'isolated-secret';
 process.env.GOOGLE_CALLBACK_URL = 'http://localhost/auth/google/callback';
 let user, databaseCalls = 0;
 const db = { execute: async (sql, params) => {
+  if(sql.startsWith('SELECT id, rol, verificado, lockedUntil'))return [[{id:1,rol:'admin',verificado:1,lockedUntil:null}]];
   databaseCalls++;
   if (sql.startsWith('SELECT id, nombre')) {
     assert.ok(sql.includes('WHERE correo = ?'));

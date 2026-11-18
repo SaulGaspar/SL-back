@@ -20,6 +20,7 @@ const publicReturns = require('./routes/public/returns.routes');
 const paymentsRoutes = require('./routes/public/payments.routes');
 const contactRoutes = require('./routes/public/contact.routes');
 const reviewsRoutes = require('./routes/public/reviews.routes');
+const notificationsRoutes = require('./routes/public/notifications.routes');
 // ── Rutas admin
 const adminProducts  = require('./routes/admin/products.routes');
 const adminInventory = require('./routes/admin/inventory.routes');
@@ -87,10 +88,12 @@ app.use('/api/returns', publicReturns);
 app.use('/api/payments', paymentsRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/reviews', reviewsRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 // RUTAS ADMIN
 app.use('/api/admin/products',  adminProducts);
 app.use('/api/admin/inventory', adminInventory);
+app.use('/api/admin/historial', require('./routes/admin/history.routes'));
 app.use('/api/admin/branches',  adminBranches);
 app.use('/api/admin/users',     adminUsers);
 app.use('/api/admin/orders',    adminOrders);

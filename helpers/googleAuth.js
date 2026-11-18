@@ -27,21 +27,33 @@ function readRegistration(req) {
   return data;
 }
 
-function frontendOrigin(requested) {
+function frontendReturnTarget(requested) {
   const base = new URL(process.env.CLIENT_URL || 'https://sportlikeapps.netlify.app').origin;
   const allowed = new Set([base,'http://localhost:1234']);
   if (process.env.FRONTEND_URL) allowed.add(new URL(process.env.FRONTEND_URL).origin);
   if (!requested) return base;
   const candidate = new URL(requested);
+  const mobileReturn = process.env.GOOGLE_MOBILE_RETURN_URL || 'sportlike://login';
+  if (candidate.protocol === 'sportlike:') {
+    if (candidate.toString() !== new URL(mobileReturn).toString()) throw new Error('Origen de regreso no permitido');
+    return candidate.toString();
+  }
   if (!allowed.has(candidate.origin) || candidate.username || candidate.password || candidate.pathname !== '/' || candidate.search || candidate.hash) throw new Error('Origen de regreso no permitido');
   return candidate.origin;
 }
 
+function googleCallbackDestination(returnTarget) {
+  const target = new URL(returnTarget);
+  return ['http:','https:'].includes(target.protocol)
+    ? new URL('/google-callback',target.origin)
+    : target;
+}
+
 function beginGoogle(req,res) {
-  const origin = frontendOrigin(req.query.return_to);
+  const returnTarget = frontendReturnTarget(req.query.return_to);
   const nonce = crypto.randomBytes(24).toString('base64url');
   res.cookie(STATE_COOKIE,nonce,{httpOnly:true,secure:req.secure,sameSite:'lax',maxAge:10*60*1000,path:'/'});
-  return jwt.sign({origin,nonce},secret(),{audience:STATE_AUDIENCE,expiresIn:'10m',algorithm:'HS256'});
+  return jwt.sign({returnTarget,nonce},secret(),{audience:STATE_AUDIENCE,expiresIn:'10m',algorithm:'HS256'});
 }
 
 function finishGoogleState(req,res) {
@@ -49,7 +61,7 @@ function finishGoogleState(req,res) {
   const nonce = (req.headers.cookie || '').split(';').map(item=>item.trim()).find(item=>item.startsWith(STATE_COOKIE+'='))?.slice(STATE_COOKIE.length+1);
   if (!nonce || typeof data.nonce !== 'string' || nonce.length !== data.nonce.length || !crypto.timingSafeEqual(Buffer.from(nonce),Buffer.from(data.nonce))) throw new Error('La solicitud de acceso expiró');
   res.clearCookie(STATE_COOKIE,{httpOnly:true,secure:req.secure,sameSite:'lax',path:'/'});
-  return frontendOrigin(data.origin);
+  return frontendReturnTarget(data.returnTarget || data.origin);
 }
 
-module.exports = {googleSession,googleRegistration,readRegistration,beginGoogle,finishGoogleState};
+module.exports = {googleSession,googleRegistration,readRegistration,beginGoogle,finishGoogleState,googleCallbackDestination};
