@@ -3,6 +3,9 @@ const router  = express.Router();
 
 const { getDB }                      = require('../../config/db');
 const { buildOrderFilter } = require('../../helpers/orderStats');
+const {transferInventory}=require('../../helpers/inventoryTransfer');
+const {mutateInventory}=require('../../helpers/inventoryMutation');
+const {requireVariants,saveVariants,positive}=require('../../helpers/variantInventory');
 const { authMiddleware, adminOnly }  = require('../../middlewares/auth');
 
 // ================================
@@ -168,106 +171,27 @@ router.get('/prediccion-agotamiento', authMiddleware, adminOnly, async (req, res
 // ➕ POST /api/admin/inventory
 // ================================
 
-router.post('/', authMiddleware, adminOnly, async (req, res) => {
-  const { product_id, branch_id, stock, min_stock } = req.body;
-
-  if (!product_id || !branch_id || stock === undefined)
-    return res.status(400).json({ error: 'Faltan campos obligatorios' });
-  if (stock < 0)
-    return res.status(400).json({ error: 'El stock no puede ser negativo' });
-
-  try {
-    const db = await getDB();
-
-    const [product] = await db.execute(
-      'SELECT id, nombre, activo FROM products WHERE id = ?', [product_id]
-    );
-    if (product.length === 0)    return res.status(404).json({ error: 'Producto no encontrado' });
-    if (product[0].activo === 0) return res.status(400).json({ error: 'No se puede agregar inventario a un producto inactivo' });
-
-    const [branch] = await db.execute(
-      'SELECT id, nombre FROM branches WHERE id = ?', [branch_id]
-    );
-    if (branch.length === 0) return res.status(404).json({ error: 'Sucursal no encontrada' });
-
-    const [exists] = await db.execute(
-      'SELECT id FROM inventory WHERE product_id = ? AND branch_id = ?',
-      [product_id, branch_id]
-    );
-    if (exists.length > 0)
-      return res.status(400).json({ error: 'Este producto ya tiene inventario en esta sucursal. Use actualizar en su lugar.' });
-
-    await db.execute(
-      'INSERT INTO inventory (product_id, branch_id, stock, min_stock) VALUES (?, ?, ?, ?)',
-      [product_id, branch_id, stock, min_stock || 10]
-    );
-
-    console.log(`✅ Inventario creado: ${product[0].nombre} en ${branch[0].nombre} por ${req.user.usuario}`);
-    res.json({ message: 'Inventario agregado correctamente' });
-  } catch (err) {
-    console.error('Error agregando inventario:', err);
-    res.status(500).json({ error: 'Error agregando inventario' });
-  }
+router.post('/', authMiddleware, adminOnly, async(req,res)=>{
+ try{res.json(await mutateInventory(await getDB(),{input:req.body,action:'crear',actor:req.user}));}
+ catch(error){res.status(error.statusCode||500).json({error:error.statusCode?error.message:'No se pudo crear el inventario.'});}
 });
 
 // ================================
 // ✏️ PUT /api/admin/inventory/:id
 // ================================
 
-router.put('/:id', authMiddleware, adminOnly, async (req, res) => {
-  const { stock, min_stock } = req.body;
-
-  if (stock === undefined || stock < 0)
-    return res.status(400).json({ error: 'Stock inválido' });
-  if (min_stock !== undefined && min_stock < 0)
-    return res.status(400).json({ error: 'Stock mínimo inválido' });
-
-  try {
-    const db = await getDB();
-
-    const [exists] = await db.execute(
-      'SELECT id, producto, sucursal FROM v_inventario_completo WHERE id = ?',
-      [req.params.id]
-    );
-    if (exists.length === 0)
-      return res.status(404).json({ error: 'Registro de inventario no encontrado' });
-
-    await db.execute(
-      'UPDATE inventory SET stock = ?, min_stock = ? WHERE id = ?',
-      [stock, min_stock || 10, req.params.id]
-    );
-
-    console.log(`✅ Inventario actualizado: ${exists[0].producto} en ${exists[0].sucursal} por ${req.user.usuario}`);
-    res.json({ message: 'Inventario actualizado correctamente' });
-  } catch (err) {
-    console.error('Error actualizando inventario:', err);
-    res.status(500).json({ error: 'Error actualizando inventario' });
-  }
+router.put('/:id([0-9]+)', authMiddleware, adminOnly, async(req,res)=>{
+ try{res.json(await mutateInventory(await getDB(),{id:req.params.id,input:req.body,action:'actualizar',actor:req.user}));}
+ catch(error){res.status(error.statusCode||500).json({error:error.statusCode?error.message:'No se pudo actualizar el inventario.'});}
 });
 
 // ================================
 // 🗑️ DELETE /api/admin/inventory/:id
 // ================================
 
-router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
-  try {
-    const db = await getDB();
-
-    const [exists] = await db.execute(
-      'SELECT id, producto, sucursal FROM v_inventario_completo WHERE id = ?',
-      [req.params.id]
-    );
-    if (exists.length === 0)
-      return res.status(404).json({ error: 'Registro de inventario no encontrado' });
-
-    await db.execute('DELETE FROM inventory WHERE id = ?', [req.params.id]);
-
-    console.log(`🗑️ Inventario eliminado: ${exists[0].producto} de ${exists[0].sucursal} por ${req.user.usuario}`);
-    res.json({ message: 'Inventario eliminado correctamente' });
-  } catch (err) {
-    console.error('Error eliminando inventario:', err);
-    res.status(500).json({ error: 'Error eliminando inventario' });
-  }
+router.delete('/:id', authMiddleware, adminOnly, async(req,res)=>{
+ try{res.json(await mutateInventory(await getDB(),{id:req.params.id,action:'eliminar',actor:req.user}));}
+ catch(error){res.status(error.statusCode||500).json({error:error.statusCode?error.message:'No se pudo eliminar el inventario.'});}
 });
 
 // ================================
@@ -275,160 +199,48 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
 // ================================
 
 router.post('/transfer', authMiddleware, adminOnly, async (req, res) => {
-  const { product_id, from_branch_id, to_branch_id, cantidad } = req.body;
-
-  if (!product_id || !from_branch_id || !to_branch_id || !cantidad)
-    return res.status(400).json({ error: 'Faltan campos obligatorios' });
-  if (cantidad <= 0)
-    return res.status(400).json({ error: 'La cantidad debe ser mayor a 0' });
-  if (from_branch_id === to_branch_id)
-    return res.status(400).json({ error: 'No se puede transferir a la misma sucursal' });
-
-  try {
-    const db = await getDB();
-    await db.execute('START TRANSACTION');
-
-    try {
-      const [origen] = await db.execute(
-        `SELECT id, stock, sucursal, producto
-         FROM v_inventario_completo
-         WHERE product_id = ? AND branch_id = ?`,
-        [product_id, from_branch_id]
-      );
-
-      if (origen.length === 0) throw new Error('No existe inventario en la sucursal origen');
-      if (origen[0].stock < cantidad)
-        throw new Error(`Stock insuficiente en ${origen[0].sucursal}. Disponible: ${origen[0].stock}`);
-
-      const [destino] = await db.execute(
-        'SELECT id FROM inventory WHERE product_id = ? AND branch_id = ?',
-        [product_id, to_branch_id]
-      );
-
-      await db.execute(
-        'UPDATE inventory SET stock = stock - ? WHERE id = ?',
-        [cantidad, origen[0].id]
-      );
-
-      if (destino.length > 0) {
-        await db.execute(
-          'UPDATE inventory SET stock = stock + ? WHERE id = ?',
-          [cantidad, destino[0].id]
-        );
-      } else {
-        await db.execute(
-          'INSERT INTO inventory (product_id, branch_id, stock, min_stock) VALUES (?, ?, ?, 10)',
-          [product_id, to_branch_id, cantidad]
-        );
-      }
-
-      await db.execute('COMMIT');
-      console.log(`✅ Transferencia: ${cantidad} unidades de ${origen[0].producto} por ${req.user.usuario}`);
-      res.json({ message: 'Transferencia completada exitosamente' });
-
-    } catch (error) {
-      await db.execute('ROLLBACK');
-      throw error;
-    }
-  } catch (err) {
-    console.error('Error en transferencia:', err);
-    res.status(500).json({ error: err.message || 'Error realizando transferencia' });
-  }
+  try {res.json(await transferInventory(await getDB(),req.body,req.user));}
+  catch(error){console.error('Error en transferencia:',error.message);res.status(error.statusCode||500).json({error:error.statusCode?error.message:'No se pudo completar la transferencia.'});}
 });
 
 // ================================
 // ➕ POST /api/admin/inventory/batch
 // ================================
 
-router.post('/batch', authMiddleware, adminOnly, async (req, res) => {
-  const { items } = req.body;
-
-  if (!Array.isArray(items) || items.length === 0)
-    return res.status(400).json({ error: 'Se requiere un array items no vacío' });
-
-  try {
-    const db = await getDB();
-    let created = 0, updated = 0, errors = 0;
-
-    for (const item of items) {
-      const { product_id, branch_id, stock, min_stock } = item;
-      if (!product_id || !branch_id || stock === undefined) { errors++; continue; }
-
-      try {
-        const [exists] = await db.execute(
-          'SELECT id FROM inventory WHERE product_id = ? AND branch_id = ?',
-          [product_id, branch_id]
-        );
-
-        if (exists.length > 0) {
-          await db.execute(
-            'UPDATE inventory SET stock = ?, min_stock = ? WHERE product_id = ? AND branch_id = ?',
-            [stock, min_stock || 40, product_id, branch_id]
-          );
-          updated++;
-        } else {
-          const [product] = await db.execute(
-            'SELECT id, activo FROM products WHERE id = ?', [product_id]
-          );
-          if (product.length === 0 || product[0].activo === 0) { errors++; continue; }
-
-          await db.execute(
-            'INSERT INTO inventory (product_id, branch_id, stock, min_stock) VALUES (?, ?, ?, ?)',
-            [product_id, branch_id, stock, min_stock || 40]
-          );
-          created++;
-        }
-      } catch (itemErr) {
-        console.error(`Error en item product_id=${product_id} branch_id=${branch_id}:`, itemErr.message);
-        errors++;
-      }
-    }
-
-    console.log(`✅ Batch inventory: ${created} creados, ${updated} actualizados, ${errors} errores`);
-    res.json({ created, updated, errors, total: items.length });
-
-  } catch (err) {
-    console.error('Error en batch inventory:', err);
-    res.status(500).json({ error: 'Error en importación batch' });
-  }
+router.post('/batch', authMiddleware, adminOnly, async(req,res)=>{
+ if(!Array.isArray(req.body.items)||!req.body.items.length||req.body.items.length>500)return res.status(400).json({error:'Envía entre 1 y 500 registros.'});
+ try{
+ const db=await getDB();let created=0,updated=0;const details=[];
+ for(const input of req.body.items){try{
+  const [existing]=await db.execute('SELECT id FROM inventory WHERE product_id=? AND branch_id=?',[positive(input.product_id),positive(input.branch_id)]);
+  await mutateInventory(db,{id:existing[0]?.id,input,action:existing.length?'actualizar':'crear',actor:req.user});existing.length?updated++:created++;
+ }catch(error){details.push({product_id:input.product_id,error:error.statusCode?error.message:'No se pudo guardar el registro.'});}}
+ res.json({created,updated,errors:details.length,details,total:req.body.items.length});
+ }catch(error){res.status(503).json({error:'No se pudo conectar con el inventario. Intenta nuevamente.'});}
 });
 
 // ================================
 // ✏️ PUT /api/admin/inventory/batch-update
 // ================================
 
-router.put('/batch-update', authMiddleware, adminOnly, async (req, res) => {
-  const { items } = req.body;
-
-  if (!Array.isArray(items) || items.length === 0)
-    return res.status(400).json({ error: 'Se requiere un array items no vacío' });
-
-  try {
-    const db = await getDB();
-    let updated = 0, errors = 0;
-
-    for (const item of items) {
-      const { id, stock, min_stock } = item;
-      if (!id || stock === undefined) { errors++; continue; }
-      try {
-        await db.execute(
-          'UPDATE inventory SET stock = ?, min_stock = ? WHERE id = ?',
-          [stock, min_stock || 40, id]
-        );
-        updated++;
-      } catch (itemErr) {
-        console.error(`Error actualizando id=${id}:`, itemErr.message);
-        errors++;
-      }
-    }
-
-    console.log(`✅ Batch update inventory: ${updated} actualizados, ${errors} errores`);
-    res.json({ updated, errors, total: items.length });
-
-  } catch (err) {
-    console.error('Error en batch-update inventory:', err);
-    res.status(500).json({ error: 'Error en actualización batch' });
-  }
+router.put('/batch-update', authMiddleware, adminOnly, async(req,res)=>{
+ if(!Array.isArray(req.body.items)||!req.body.items.length||req.body.items.length>500)return res.status(400).json({error:'Envía entre 1 y 500 registros.'});
+ try{
+ const db=await getDB();let updated=0;const details=[];
+ for(const input of req.body.items){try{await mutateInventory(db,{id:input.id,input,action:'actualizar',actor:req.user});updated++;}catch(error){details.push({id:input.id,error:error.statusCode?error.message:'No se pudo guardar el registro.'});}}
+ res.json({updated,errors:details.length,details,total:req.body.items.length});
+ }catch(error){res.status(503).json({error:'No se pudo conectar con el inventario. Intenta nuevamente.'});}
 });
 
+router.get('/:id/variantes',authMiddleware,adminOnly,async(req,res)=>{
+ try{requireVariants();const id=positive(req.params.id),db=await getDB();
+  const [[inventory]]=await db.execute('SELECT i.*,p.talla,p.colores,p.nombre AS producto FROM inventory i JOIN products p ON p.id=i.product_id WHERE i.id=?',[id]);
+  if(!inventory)return res.status(404).json({error:'Inventario no encontrado.'});
+  const [variantes]=await db.execute('SELECT id,talla,color,stock FROM inventario_variantes WHERE inventario_id=? ORDER BY id',[id]);res.json({inventory,variantes});
+ }catch(error){res.status(error.statusCode||500).json({error:error.statusCode?error.message:'No se pudieron consultar las variantes.'});}
+});
+router.put('/:id/variantes',authMiddleware,adminOnly,async(req,res)=>{
+ try{res.json(await saveVariants(await getDB(),req.params.id,req.body.variantes,req.user));}
+ catch(error){res.status(error.statusCode||500).json({error:error.statusCode?error.message:'No se pudieron guardar las variantes.'});}
+});
 module.exports = router;

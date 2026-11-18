@@ -12,7 +12,7 @@ const db={execute:async(sql,params)=>{
 }};
 const dbPath=require.resolve('../config/db');require.cache[dbPath]={id:dbPath,filename:dbPath,loaded:true,exports:{getDB:async()=>db}};
 const router=require('../routes/public/auth.routes');
-const {finishGoogleState,googleRegistration}=require('../helpers/googleAuth');
+const {finishGoogleState,googleRegistration,googleCallbackDestination}=require('../helpers/googleAuth');
 const verify=profile=>new Promise((resolve,reject)=>passport._strategy('google')._verify('unused','unused',profile,(error,result)=>error?reject(error):resolve(result)));
 async function main(){
  const app=express();app.use(express.json());app.use('/auth',router);app.use('/api',router);app.use('/api',require('../routes/public/profile.routes'));
@@ -34,7 +34,9 @@ async function main(){
   const expired=jwt.sign({purpose:'google-registration',correo:'x@example.test'},process.env.JWT_SECRET,{audience:'sportlike-google-registration',expiresIn:-1});assert.equal((await fetch(base+'/api/google/registration',{headers:{Authorization:'Bearer '+expired}})).status,401);
   assert.equal(await verify({...googleProfile,emails:[{value:'ana@example.test',verified:false}]}),false);
   const start=await fetch(base+'/auth/google?return_to='+encodeURIComponent('http://localhost:1234'),{redirect:'manual'});assert.equal(start.status,302);const oauth=new URL(start.headers.get('location'));const state=oauth.searchParams.get('state');const cookie=start.headers.get('set-cookie').split(';')[0];const origin=finishGoogleState({query:{state},headers:{cookie},secure:false},{clearCookie:()=>{}});assert.equal(origin,'http://localhost:1234');assert.throws(()=>finishGoogleState({query:{state},headers:{cookie:''}},{clearCookie:()=>{}}));
+  const mobileStart=await fetch(base+'/auth/google?return_to='+encodeURIComponent('sportlike://login'),{redirect:'manual'});assert.equal(mobileStart.status,302);const mobileOauth=new URL(mobileStart.headers.get('location'));const mobileState=mobileOauth.searchParams.get('state');const mobileCookie=mobileStart.headers.get('set-cookie').split(';')[0];const mobileTarget=finishGoogleState({query:{state:mobileState},headers:{cookie:mobileCookie},secure:false},{clearCookie:()=>{}});assert.equal(mobileTarget,'sportlike://login');assert.equal(googleCallbackDestination(mobileTarget).toString(),'sportlike://login');
   assert.equal((await fetch(base+'/auth/google?return_to=https://no-permitido.example',{redirect:'manual'})).status,400);
+  assert.equal((await fetch(base+'/auth/google?return_to='+encodeURIComponent('sportlike://perfil'),{redirect:'manual'})).status,400);
   console.log('GOOGLE OK: cuenta existente intacta, usuario nuevo a elección, ticket temporal sin acceso privado, colisiones, reintentos sin duplicados y regreso seguro al origen. Sin Google ni BD reales.');
  }finally{await new Promise(resolve=>server.close(resolve));}
 }

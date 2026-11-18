@@ -5,6 +5,9 @@ const { getDB }                      = require('../../config/db');
 const { authMiddleware, adminOnly }  = require('../../middlewares/auth');
 const { sanitizeInput }              = require('../../helpers/validators');
 const { sanitizeLog }                = require('../../helpers/sanitizeLog');
+const { saveProductInventory } = require('../../helpers/inventoryMutation');
+const { auditedTransaction } = require('../../helpers/audit');
+const { problem } = require('../../helpers/variantInventory');
 
 function normalizeSpecifications(value) {
   if (value === undefined || value === null || String(value).trim() === '') return null;
@@ -364,7 +367,8 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
   try {
     const db = await getDB();
 
-    const [result] = await db.execute(`
+    const productId=await auditedTransaction(db,{actor:req.user,action:'producto_creado',entity:'inventario'},async conn=>{
+    const [result] = await conn.execute(`
       INSERT INTO products (nombre, marca, descripcion, especificaciones, precio, categoria, imagen, talla, colores, activo, createdAt, updatedAt)
       VALUES (?,?,?,?,?,?,?,?,?,1,NOW(),NOW())
     `, [nombreSafe, marcaSafe, descripcionSafe, especificacionesSafe, precio, categoriaSafe, imagen, tallaSafe, coloresSafe]);
@@ -372,29 +376,21 @@ router.post('/', authMiddleware, adminOnly, async (req, res) => {
     const productId = result.insertId;
 
     if (imagen) {
-      await db.execute(
+      await conn.execute(
         'INSERT INTO product_images (product_id, url, orden) VALUES (?, ?, 0)',
         [productId, imagen]
       );
     }
 
-    if (inventario && Array.isArray(inventario)) {
-      for (const inv of inventario) {
-        if (inv.branch_id && inv.stock !== undefined) {
-          await db.execute(`
-            INSERT INTO inventory (product_id, branch_id, stock, min_stock)
-            VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE stock = VALUES(stock), min_stock = VALUES(min_stock)
-          `, [productId, inv.branch_id, inv.stock, inv.min_stock || 10]);
-        }
-      }
-    }
+    if(inventario)await saveProductInventory(conn,productId,inventario,req.user);
+    return {after:{product_id:productId,nombre:nombreSafe},result:productId};
+    });
 
     console.log(`✅ Producto creado: ${sanitizeLog(nombreSafe)} (ID: ${sanitizeLog(productId)}) por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Producto creado correctamente', productId });
   } catch (err) {
     console.error('Error creando producto:', err);
-    res.status(500).json({ error: 'Error creando producto' });
+    res.status(err.statusCode||500).json({ error:err.statusCode?err.message:'Error creando producto' });
   }
 });
 
@@ -476,21 +472,16 @@ router.put('/:id/inventory', authMiddleware, adminOnly, async (req, res) => {
     if (exists.length === 0)
       return res.status(404).json({ error: 'Producto no encontrado' });
 
-    for (const inv of inventario) {
-      if (inv.branch_id && inv.stock !== undefined) {
-        await db.execute(`
-          INSERT INTO inventory (product_id, branch_id, stock, min_stock)
-          VALUES (?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE stock = VALUES(stock), min_stock = VALUES(min_stock)
-        `, [req.params.id, inv.branch_id, inv.stock, inv.min_stock || 10]);
-      }
-    }
+    await auditedTransaction(db,{actor:req.user,action:'inventario_producto_actualizado',entity:'inventario',id:Number(req.params.id)},async conn=>{
+      await saveProductInventory(conn,Number(req.params.id),inventario,req.user);
+      return {after:{product_id:Number(req.params.id),sucursales:inventario.length}};
+    });
 
     console.log(`✅ Inventario actualizado para producto ID ${sanitizeLog(req.params.id)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Inventario actualizado correctamente' });
   } catch (err) {
     console.error('Error actualizando inventario del producto:', err);
-    res.status(500).json({ error: 'Error actualizando inventario' });
+    res.status(err.statusCode||500).json({ error:err.statusCode?err.message:'Error actualizando inventario' });
   }
 });
 
@@ -542,14 +533,21 @@ router.delete('/:id/permanent', authMiddleware, adminOnly, async (req, res) => {
     if (exists.length === 0)
       return res.status(404).json({ error: 'Producto no encontrado' });
 
-    await db.execute('DELETE FROM product_images WHERE product_id = ?', [req.params.id]);
-    await db.execute('DELETE FROM inventory WHERE product_id = ?', [req.params.id]);
-    await db.execute('DELETE FROM products WHERE id = ?', [req.params.id]);
+    await auditedTransaction(db,{actor:req.user,action:'eliminar_producto_sin_movimientos',entity:'inventario',id:Number(req.params.id)},async conn=>{
+      const [[product]]=await conn.execute('SELECT id FROM products WHERE id=? FOR UPDATE',[req.params.id]);
+      if(!product)problem('Producto no encontrado',404);
+      const [inventory]=await conn.execute('SELECT id FROM inventory WHERE product_id=? LIMIT 1',[req.params.id]);
+      const [orders]=await conn.execute('SELECT id FROM order_items WHERE product_id=? LIMIT 1',[req.params.id]);
+      if(inventory.length||orders.length)problem('Este producto tiene inventario o pedidos. Desactívalo para conservar sus registros.',409);
+      await conn.execute('DELETE FROM product_images WHERE product_id=?',[req.params.id]);
+      await conn.execute('DELETE FROM products WHERE id=?',[req.params.id]);
+      return {before:{product_id:Number(req.params.id),nombre:exists[0].nombre},after:null};
+    });
 
     console.log(`🗑️ Producto eliminado permanentemente: ${sanitizeLog(exists[0].nombre)} por ${sanitizeLog(req.user.usuario)}`);
     res.json({ message: 'Producto eliminado permanentemente' });
   } catch (err) {
-    res.status(500).json({ error: 'Error eliminando producto permanentemente' });
+    res.status(err.statusCode||500).json({ error:err.statusCode?err.message:'Error eliminando producto permanentemente' });
   }
 });
 

@@ -12,6 +12,8 @@
     "repurchase:build": "node scripts/build-repurchase.js",
     "segments:build": "node scripts/build-customer-segments.js",
     "check:stats": "node scripts/check-admin-stats.cjs",
+    "check:admin:safety": "node scripts/check-admin-safety.cjs",
+    "check:inventory:audit": "node scripts/check-inventory-audit.cjs",
     "check:login": "node scripts/check-login-promotions.cjs",
     "check:profile": "node scripts/check-profile.cjs",
     "check:mailer": "node scripts/check-mailer.cjs",

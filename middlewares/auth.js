@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const {getDB}=require('../config/db');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -25,12 +26,23 @@ function authMiddleware(req, res, next) {
   }
 }
 
-function adminOnly(req, res, next) {
+async function adminOnly(req, res, next) {
   if (!req.user || req.user.rol !== 'admin') {
     console.warn(`⚠️ Intento de acceso no autorizado a área admin por usuario: ${req.user?.usuario || 'desconocido'}`);
     return res.status(403).json({ error: 'Acceso denegado. Solo administradores.' });
   }
-  next();
+  try {
+    const db=await getDB();
+    const [[current]]=await db.execute('SELECT id, rol, verificado, lockedUntil, usuario FROM users WHERE id = ?', [req.user.id]);
+    if(!current || current.rol!=='admin' || Number(current.verificado)!==1 || (current.lockedUntil && new Date(current.lockedUntil).getTime()>Date.now())){
+      return res.status(403).json({error:'Tu cuenta ya no tiene permisos de administrador activos. Vuelve a iniciar sesión.'});
+    }
+    req.user={...req.user,rol:current.rol,usuario:current.usuario||req.user.usuario};
+    next();
+  }catch(error){
+    console.error('No se pudieron comprobar los permisos de administración:',error.code||error.name);
+    return res.status(503).json({error:'No pudimos comprobar tus permisos. Intenta nuevamente.'});
+  }
 }
 
 module.exports = { authMiddleware, adminOnly };

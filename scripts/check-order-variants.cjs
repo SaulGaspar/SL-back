@@ -3,7 +3,12 @@ const assert=require('node:assert/strict'),express=require('express'),jwt=requir
 process.env.JWT_SECRET='isolated-order-variant-test';process.env.MP_ACCESS_TOKEN='TEST-isolated';
 let columns=true,preferenceCalls=0,preferenceBody,stock=8;const saved=[],decrements=[];
 const product={id:1,nombre:'Tenis prueba',precio:500,descripcion:'Prueba',talla:'26,27',colores:'Negro,Blanco'};
+const variantStock=[{id:1,talla:'26',color:'Negro',stock:2},{id:2,talla:'27',color:'Blanco',stock:3}],audit=[];
 const db={execute:async(sql,params=[])=>{
+ if(sql.startsWith('SELECT v.talla'))return [[...variantStock]];
+ if(sql.startsWith('SELECT i.id AS inventory_id')){const v=variantStock.find(v=>v.talla===params[1]&&v.color===params[2]&&v.stock>=params[3]);return [v?[{inventory_id:1,variant_id:v.id,branch_id:1,nombre:'Sucursal prueba',stock:v.stock,precio:500}]:[]];}
+ if(sql.startsWith('UPDATE inventario_variantes')){const v=variantStock.find(v=>v.id===params[1]);if(v.stock<params[0])return [{affectedRows:0}];v.stock-=params[0];return [{affectedRows:1}];}
+ if(sql.startsWith('INSERT INTO historial_admin')){audit.push(params);return [{insertId:audit.length}];}
  if(sql==='SHOW COLUMNS FROM order_items')return [columns?[{Field:'talla'},{Field:'color'}]:[]];
  if(sql.includes('GET_LOCK'))return [[{acquired:1}]];
  if(sql.includes('RELEASE_LOCK'))return [[{released:1}]];
@@ -42,6 +47,11 @@ async function main(){
   const payment={id:123,status:'approved',currency_id:'MXN',transaction_amount:1500,metadata:{user_id:'1',address_id:'1',cart_hash:hashCartItems(items)}};
   await createPaidOrder({payment,userId:1,addressId:1,items});assert.equal(saved.length,2);assert.deepEqual(saved.map(row=>row.slice(-2)),[['26','Negro'],['27','Blanco']]);assert.equal(decrements.reduce((sum,row)=>sum+row[0],0),3);
   await assert.rejects(()=>createPaidOrder({payment,userId:1,addressId:1,items:[{...items[0],color:'Blanco'},items[1]]}),/carrito no coincide/);
+  process.env.SPORTLIKE_VARIANTS_ENABLED='true';process.env.SPORTLIKE_AUDIT_ENABLED='true';
+  const callsBefore=preferenceCalls;
+  res=await post({direccion_id:1,items:[{...items[0],color:'Blanco'}]});assert.equal(res.status,409);assert.equal(preferenceCalls,callsBefore,'No genera un cobro para una combinación inexistente');
+  res=await post({direccion_id:1,items});assert.equal(res.status,201);
+  await createPaidOrder({payment:{...payment,id:124},userId:1,addressId:1,items});assert.deepEqual(variantStock.map(v=>v.stock),[1,1]);assert.equal(audit.filter(v=>v[2]==='salida_por_venta').length,2);
   console.log('VARIANTES OK: selección validada, variantes separadas, hash protegido, stock conjunto, migración faltante bloquea cobro y talla/color guardados. BD y pago simulados.');
  }finally{await new Promise(resolve=>server.close(resolve));}
 }

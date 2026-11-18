@@ -3,7 +3,7 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const {googleSession,googleRegistration,readRegistration,beginGoogle,finishGoogleState} = require('../../helpers/googleAuth');
+const {googleSession,googleRegistration,readRegistration,beginGoogle,finishGoogleState,googleCallbackDestination} = require('../../helpers/googleAuth');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
@@ -57,11 +57,11 @@ router.get('/google',(req,res,next)=>{
 });
 
 router.get('/google/callback',(req,res,next)=>{
-  let origin;
-  try { origin = finishGoogleState(req,res); }
+  let returnTarget;
+  try { returnTarget = finishGoogleState(req,res); }
   catch { return res.status(400).send('El acceso con Google expiró o no corresponde a este navegador. Vuelve a iniciar sesión.'); }
   passport.authenticate('google',{session:false},(error,result)=>{
-    const destination = new URL('/google-callback',origin);
+    const destination = googleCallbackDestination(returnTarget);
     if (error || !result) destination.hash = new URLSearchParams({error:'google_access_failed'}).toString();
     else destination.hash = new URLSearchParams(result.registration_token ? {registration_token:result.registration_token} : {token:result.token}).toString();
     res.redirect(destination.toString());

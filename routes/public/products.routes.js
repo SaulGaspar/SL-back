@@ -3,6 +3,7 @@ const router = express.Router();
 
 const { getDB } = require('../../config/db');
 const { getRecommendations } = require('../../services/apriori.service');
+const {variantAvailability}=require('../../helpers/variantInventory');
 
 // ================================
 // 📦 GET /api/products
@@ -228,7 +229,7 @@ router.get('/:id', async (req, res) => {
       ORDER BY orden ASC
     `, [req.params.id]);
 
-    res.json({ ...product[0], images });
+    res.json({ ...product[0], images, variantes:await variantAvailability(db,Number(req.params.id)) });
   } catch (err) {
     console.error('Error obteniendo producto:', err);
     res.status(500).json({ error: 'Error obteniendo producto' });

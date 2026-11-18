@@ -6,10 +6,10 @@ const { authMiddleware, adminOnly } = require('../../middlewares/auth');
 const { sanitizeLog }    = require('../../helpers/sanitizeLog');
 const {
   getApprovedPaymentForUser,
-  hashCartItems,
 } = require('../../helpers/mercadoPago');
 
-const STATUS_VALIDOS = ['pendiente', 'preparando', 'en_camino', 'entregado', 'cancelado'];
+const {createPaidOrder}=require('../../helpers/createPaidOrder');
+const {allowedOrderStatuses,changeOrderStatus}=require('../../helpers/orderStatus');
 const { buildOrderFilter, orderSummarySQL, withLegacyAliases, normalizeOrderStatus } = require('../../helpers/orderStats');
 
 // ================================
@@ -210,7 +210,7 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
       `, [req.params.id]);
       items = itemRows;
     } catch (e) { console.warn('order_items no disponible:', e.message); }
-    res.json({ order: {...order[0],status:normalizeOrderStatus(order[0].status)}, items });
+    res.json({ order: {...order[0],status:normalizeOrderStatus(order[0].status)}, items, allowed_statuses:allowedOrderStatuses(order[0].status) });
   } catch (err) {
     console.error('Error obteniendo orden:', err.message);
     res.status(500).json({ error: 'Error obteniendo orden', detalle: err.message });
@@ -221,266 +221,24 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
 // 🔄 PATCH /:id/status  (admin)
 // ================================
 router.patch('/:id/status', authMiddleware, adminOnly, async (req, res) => {
-  const { status } = req.body;
-  if (!status || !STATUS_VALIDOS.includes(status))
-    return res.status(400).json({ error: 'Status inválido. Valores: ' + STATUS_VALIDOS.join(', ') });
   try {
-    const db = await getDB();
-    const [exists] = await db.execute('SELECT id FROM orders WHERE id = ?', [req.params.id]);
-    if (exists.length === 0) return res.status(404).json({ error: 'Orden no encontrada' });
-    await db.execute('UPDATE orders SET status = ? WHERE id = ?', [status, req.params.id]);
-    console.log(`✅ Orden #${sanitizeLog(req.params.id)} → '${sanitizeLog(status)}' por ${sanitizeLog(req.user.usuario)}`);
-    res.json({ message: 'Status actualizado correctamente' });
-  } catch (err) {
-    console.error('Error actualizando status:', err.message);
-    res.status(500).json({ error: 'Error actualizando status', detalle: err.message });
-  }
+    const result=await changeOrderStatus(await getDB(),req.params.id,req.body.status,req.body.confirm_cancellation,req.user);
+    console.log(`Orden #${sanitizeLog(req.params.id)} → '${sanitizeLog(req.body.status)}' por ${sanitizeLog(req.user.usuario)}`);
+    res.json(result);
+  }catch(error){console.error('Error actualizando estado:',error.message);res.status(error.statusCode||500).json({error:error.statusCode?error.message:'No se pudo actualizar el estado del pedido.'});}
 });
 
 // ================================
 // ➕ POST /  — crear pedido (cliente logueado)
-// ✅ FIX: validación de stock DENTRO de la transacción con FOR UPDATE
+// Alias compatible: usa la misma transacción y protección por pago que /payments/complete.
 // ================================
 router.post('/', authMiddleware, async (req, res) => {
-  const { items, direccion_id, payment_id } = req.body;
-
-  if (!items || !Array.isArray(items) || items.length === 0)
-    return res.status(400).json({ error: 'El pedido no tiene productos' });
-  if (items.some((item) =>
-    !Number.isInteger(Number(item.product_id)) ||
-    Number(item.product_id) <= 0 ||
-    !Number.isInteger(Number(item.cantidad)) ||
-    Number(item.cantidad) <= 0 ||
-    Number(item.cantidad) > 20
-  )) {
-    return res.status(400).json({ error: 'El pedido contiene productos o cantidades inválidas' });
-  }
-  if (!direccion_id)
-    return res.status(400).json({ error: 'Debes seleccionar una dirección de envío antes de pagar' });
-  if (!payment_id)
-    return res.status(402).json({ error: 'Debes completar el pago con Mercado Pago' });
-
-  let payment;
   try {
-    payment = await getApprovedPaymentForUser(payment_id, req.user.id);
-  } catch (error) {
-    return res.status(error.statusCode || 500).json({
-      error: error.message || 'No se pudo verificar el pago',
-      payment_status: error.paymentStatus,
-    });
-  }
-
-  const paymentAddressId = payment?.metadata?.address_id;
-  if (
-    paymentAddressId !== undefined &&
-    paymentAddressId !== null &&
-    String(paymentAddressId) !== String(direccion_id)
-  ) {
-    return res.status(400).json({
-      error: 'La dirección no coincide con la utilizada durante el pago',
-    });
-  }
-  if (
-    payment?.metadata?.cart_hash &&
-    payment.metadata.cart_hash !== hashCartItems(items)
-  ) {
-    return res.status(400).json({
-      error: 'El carrito no coincide con los productos pagados',
-    });
-  }
-
-  const pedidoRef = `MP-${payment.id}`;
-  let db;
-  let existingOrders;
-  try {
-    db = await getDB();
-    [existingOrders] = await db.execute(
-      `SELECT o.id AS orderId, o.pedido_ref AS pedidoRef, b.nombre AS sucursal
-       FROM orders o
-       LEFT JOIN branches b ON b.id = o.sucursal
-       WHERE o.user_id = ? AND o.pedido_ref = ?
-       ORDER BY o.id`,
-      [req.user.id, pedidoRef]
-    );
-  } catch (error) {
-    console.error('Error consultando pago ya procesado:', error.message);
-    return res.status(500).json({ error: 'No se pudo validar el pedido pagado' });
-  }
-
-  if (existingOrders.length > 0) {
-    const sucursales = [
-      ...new Set(existingOrders.map((order) => order.sucursal).filter(Boolean)),
-    ];
-    return res.json({
-      message: 'El pedido de este pago ya estaba registrado',
-      alreadyProcessed: true,
-      orderId: existingOrders[0].orderId,
-      pedidoRef,
-      orderIds: existingOrders,
-      sucursales,
-      sucursal: sucursales[0] || '',
-      paymentId: payment.id,
-    });
-  }
-
-  const conn = await db.getConnection();
-
-  try {
-    await conn.beginTransaction();
-
-    const [direccion] = await conn.execute(
-      'SELECT id FROM direcciones WHERE id = ? AND usuario_id = ?',
-      [direccion_id, req.user.id]
-    );
-
-    if (direccion.length === 0) {
-      await conn.rollback();
-      conn.release();
-      return res.status(400).json({ error: 'La dirección seleccionada no es válida' });
-    }
-
-    // ── 1. Validar stock Y asignar sucursal DENTRO de la transacción ──────────
-    // FOR UPDATE bloquea las filas de inventory hasta el COMMIT,
-    // evitando que otro pedido concurrente use el mismo stock.
-    const itemsConSucursal = [];
-
-    for (const item of items) {
-      const { product_id, cantidad } = item;
-
-      const [rows] = await conn.execute(`
-        SELECT i.branch_id, b.nombre, i.stock,
-               p.nombre AS product_name, p.precio
-        FROM inventory i
-        JOIN branches b ON b.id = i.branch_id
-        JOIN products p ON p.id = i.product_id
-        WHERE i.product_id = ?
-          AND b.activo = 1
-          AND p.activo = 1
-          AND i.stock >= ?
-        ORDER BY i.stock DESC
-        LIMIT 1
-        FOR UPDATE
-      `, [product_id, cantidad]);
-
-      if (rows.length === 0) {
-        await conn.rollback();
-        conn.release();
-
-        const db = await getDB();
-        const [pNombre] = await db.execute(
-          'SELECT nombre FROM products WHERE id = ?', [product_id]
-        );
-        const nombre = pNombre[0]?.nombre || `Producto ID ${product_id}`;
-        return res.status(400).json({
-          error: `Stock insuficiente para "${nombre}". Verifica la disponibilidad e intenta de nuevo.`,
-          product_id,
-        });
-      }
-
-      itemsConSucursal.push({
-        ...item,
-        product_id,
-        cantidad,
-        subtotal: Number(rows[0].precio) * cantidad,
-        branch_id:     rows[0].branch_id,
-        branch_nombre: rows[0].nombre,
-      });
-    }
-
-    const productsTotal = itemsConSucursal.reduce(
-      (sum, item) => sum + Number(item.subtotal),
-      0
-    );
-    const shipping = productsTotal >= 1500 ? 0 : 75;
-    const expectedPaymentTotal = productsTotal + shipping;
-    const paidAmount = Number(payment.transaction_amount);
-
-    if (
-      payment.currency_id !== 'MXN' ||
-      !Number.isFinite(paidAmount) ||
-      Math.abs(paidAmount - expectedPaymentTotal) > 0.01
-    ) {
-      await conn.rollback();
-      conn.release();
-      return res.status(400).json({
-        error: 'El monto pagado no coincide con el total actual del carrito',
-      });
-    }
-
-    // ── 2. Agrupar ítems por sucursal ─────────────────────────────────────────
-    const porSucursal = {};
-    for (const item of itemsConSucursal) {
-      const key = item.branch_id;
-      if (!porSucursal[key]) {
-        porSucursal[key] = {
-          branch_id:     item.branch_id,
-          branch_nombre: item.branch_nombre,
-          items:         [],
-          subtotal:      0,
-        };
-      }
-      porSucursal[key].items.push(item);
-      porSucursal[key].subtotal += Number(item.subtotal);
-    }
-
-    const grupos    = Object.values(porSucursal);
-    const orderIds  = [];
-
-    for (const grupo of grupos) {
-      // ── 3a. Crear la orden ────────────────────────────────────────────
-      const [result] = await conn.execute(`
-        INSERT INTO orders (user_id, sucursal, total, status, fecha, pedido_ref)
-        VALUES (?, ?, ?, 'pendiente', NOW(), ?)
-      `, [req.user.id, grupo.branch_id, grupo.subtotal, pedidoRef]);
-
-      const orderId = result.insertId;
-      orderIds.push({ orderId, sucursal: grupo.branch_nombre });
-
-      for (const item of grupo.items) {
-        // ── 3b. Insertar ítem del pedido ──────────────────────────────
-        await conn.execute(
-          `INSERT INTO order_items (order_id, product_id, cantidad, subtotal)
-           VALUES (?, ?, ?, ?)`,
-          [orderId, item.product_id, item.cantidad, item.subtotal]
-        );
-
-        // ── 3c. Descontar stock ───────────────────────────────────────
-        // GREATEST(..., 0) es defensa adicional aunque FOR UPDATE ya garantiza stock >= cantidad
-        await conn.execute(
-          `UPDATE inventory
-           SET stock = GREATEST(stock - ?, 0)
-           WHERE product_id = ? AND branch_id = ?`,
-          [item.cantidad, item.product_id, grupo.branch_id]
-        );
-      }
-    }
-
-    await conn.commit();
-    conn.release();
-
-    const sucursales = [...new Set(grupos.map(g => g.branch_nombre))];
-    console.log(
-      `✅ ${orderIds.length} pedido(s) creado(s) | usuario ${req.user.id} | pago MP ${payment.id} | $${paidAmount} | ${sucursales.join(', ')}`
-    );
-
-    res.json({
-      message:   'Pedido creado correctamente',
-      orderId:   orderIds[0].orderId,
-      pedidoRef,
-      orderIds,
-      sucursales,
-      sucursal:  sucursales[0],
-      paymentId: payment.id,
-      paidTotal: paidAmount,
-      shipping,
-    });
-
-  } catch (err) {
-    await conn.rollback();
-    conn.release();
-    console.error('Error creando pedido:', err);
-    res.status(500).json({ error: 'Error al procesar el pedido', detalle: err.message });
-  }
+    if(!req.body.payment_id)return res.status(402).json({error:'Debes completar el pago con Mercado Pago.'});
+    const payment=await getApprovedPaymentForUser(req.body.payment_id,req.user.id);
+    const result=await createPaidOrder({payment,userId:req.user.id,addressId:req.body.direccion_id,items:req.body.items});
+    res.json(result);
+  }catch(error){console.error('Error creando pedido:',error.message);res.status(error.statusCode||500).json({error:error.statusCode?error.message:'No se pudo completar el pedido pagado.',payment_status:error.paymentStatus});}
 });
 
 module.exports = router;

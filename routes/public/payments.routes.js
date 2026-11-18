@@ -13,6 +13,7 @@ const {
 } = require('../../helpers/mercadoPago');
 const { createPaidOrder } = require('../../helpers/createPaidOrder');
 const {normalizeItems: normalizeVariants,requireVariantColumns,validateSelection}=require('../../helpers/orderVariants');
+const {variantsEnabled,variantAvailability,option}=require('../../helpers/variantInventory');
 
 const router = express.Router();
 const SHIPPING_COST = 75;
@@ -68,7 +69,15 @@ router.post('/preference', authMiddleware, async (req, res) => {
     );
     const quantities=new Map();
     for(const item of items){validateSelection(item,products.find(product=>Number(product.id)===item.product_id));quantities.set(item.product_id,(quantities.get(item.product_id)||0)+item.cantidad);}
-    const unavailable = items.find(item=>(stockMap.get(item.product_id)||0)<quantities.get(item.product_id));
+    let unavailable;
+    if(variantsEnabled()){
+      const availability=new Map();
+      for(const item of items){
+        if(!availability.has(item.product_id))availability.set(item.product_id,await variantAvailability(db,item.product_id));
+        const variant=availability.get(item.product_id).find(row=>row.talla===option(item.talla)&&row.color===option(item.color));
+        if(!variant||Number(variant.stock)<item.cantidad){unavailable=item;break;}
+      }
+    }else unavailable = items.find(item=>(stockMap.get(item.product_id)||0)<quantities.get(item.product_id));
     if (unavailable) {
       const product = products.find(
         (candidate) => Number(candidate.id) === unavailable.product_id
@@ -117,6 +126,11 @@ router.post('/preference', authMiddleware, async (req, res) => {
       process.env.FRONTEND_URL,
       'https://sportlikeapps.netlify.app'
     );
+    const mobileUrl = cleanBaseUrl(
+      process.env.MOBILE_APP_URL,
+      'sportlike://pago/resultado'
+    );
+    const returnUrl = req.body.platform === 'mobile' ? mobileUrl : frontendUrl;
     const backendUrl = cleanBaseUrl(
       process.env.BACKEND_PUBLIC_URL,
       'https://sl-back.vercel.app'
@@ -142,9 +156,9 @@ router.post('/preference', authMiddleware, async (req, res) => {
           cart_items_json: JSON.stringify(items),
         },
         back_urls: {
-          success: `${frontendUrl}/pago?mp_result=success`,
-          failure: `${frontendUrl}/pago?mp_result=failure`,
-          pending: `${frontendUrl}/pago?mp_result=pending`,
+          success: `${returnUrl}${returnUrl.includes('?') ? '&' : '?'}mp_result=success`,
+          failure: `${returnUrl}${returnUrl.includes('?') ? '&' : '?'}mp_result=failure`,
+          pending: `${returnUrl}${returnUrl.includes('?') ? '&' : '?'}mp_result=pending`,
         },
         auto_return: 'approved',
         notification_url: `${backendUrl}/api/payments/webhook`,
@@ -162,6 +176,7 @@ router.post('/preference', authMiddleware, async (req, res) => {
       subtotal,
       shipping,
       total: subtotal + shipping,
+      return_url: returnUrl,
     });
   } catch (error) {
     console.error('Error creando preferencia Mercado Pago:', error.message);
