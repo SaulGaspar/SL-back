@@ -40,9 +40,10 @@ function memory(){
   if(sql.startsWith('UPDATE inventory SET stock = stock +')){state.inventory.find(v=>v.id===p[1]).stock+=p[0];return [{affectedRows:1}];}
   if(sql.startsWith('UPDATE inventory SET stock=')){const v=state.inventory.find(v=>v.id===p.at(-1));v.stock=p[0];return [{affectedRows:1}];}
   if(sql.startsWith('INSERT INTO inventory')){state.inventory.find(v=>v.product_id===p[0]&&v.branch_id===p[1]).stock+=p[2];return [{affectedRows:1}];}
-  if(sql.startsWith('SELECT id, status, sucursal'))return [[{...state.order}]];
+  if(sql.startsWith('SELECT id, user_id, status, sucursal, pedido_ref'))return [[{...state.order,user_id:3,pedido_ref:'PRUEBA-9'}]];
   if(sql.includes('FROM order_items'))return [[{product_id:7,talla:'26',color:'Negro',cantidad:1}]];
   if(sql.startsWith('UPDATE orders SET status')){state.order.status=p[0];return [{affectedRows:1}];}
+  if(sql.startsWith('SELECT token FROM push_tokens'))return [[]];
   if(sql.includes('(usuario = ? OR telefono = ?)'))return [[]];
   if(sql.startsWith('SELECT id, rol, verificado FROM users'))return [[{...state.user}]];
   if(sql.startsWith('SELECT id,rol,verificado FROM users'))return [[{...state.user}]];

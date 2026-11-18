@@ -7,7 +7,7 @@ const {changeOrderStatus,allowedOrderStatuses}=require('../helpers/orderStatus')
 function memoryDB(){
  const state={stock:{1:5,2:0},order:{id:91,status:'pendiente',sucursal:1,pedido_ref:'MP-123'},items:[{product_id:7,cantidad:2}],fail:false,commits:0,rollbacks:0,releases:0,sql:[]};
  let tail=Promise.resolve();
- const db={execute:async()=>{throw Error('No se debe usar el pool dentro de una transacción');},getConnection:async()=>{
+ const db={execute:async(sql)=>{if(sql.startsWith('SELECT token FROM push_tokens'))return [[]];throw Error('No se debe usar el pool dentro de una transacción');},getConnection:async()=>{
   let unlock,snapshot;
   return {
    beginTransaction:async()=>{const previous=tail;tail=new Promise(resolve=>{unlock=resolve;});await previous;snapshot=JSON.stringify({stock:state.stock,order:state.order});},
@@ -19,7 +19,7 @@ function memoryDB(){
     if(sql.startsWith('SELECT id, branch_id, stock')){assert.ok(sql.includes('FOR UPDATE'));return [[{id:1,branch_id:1,stock:state.stock[1]},{id:2,branch_id:2,stock:state.stock[2]}]];}
     if(sql.startsWith('UPDATE inventory SET stock = stock -')){const [quantity,id]=params;if(state.stock[id]<quantity)return [{affectedRows:0}];state.stock[id]-=quantity;return [{affectedRows:1}];}
     if(sql.startsWith('UPDATE inventory SET stock = stock +')){if(state.fail)throw Error('Fallo simulado en destino');state.stock[params[1]]+=params[0];return [{affectedRows:1}];}
-    if(sql.startsWith('SELECT id, status, sucursal')){assert.ok(sql.includes('FOR UPDATE'));return [[{...state.order}]];}
+    if(sql.startsWith('SELECT id, user_id, status, sucursal, pedido_ref')){assert.ok(sql.includes('FOR UPDATE'));return [[{...state.order,user_id:7}]];}
     if(sql.includes('FROM order_items'))return [[...state.items]];
     if(sql.startsWith('INSERT INTO inventory')){if(state.fail)throw Error('Fallo simulado al restituir');state.stock[params[1]]+=params[2];return [{affectedRows:1}];}
     if(sql.startsWith('UPDATE orders SET status')){state.order.status=params[0];return [{affectedRows:1}];}
