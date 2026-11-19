@@ -17,7 +17,8 @@
     "check:login": "node scripts/check-login-promotions.cjs",
     "check:profile": "node scripts/check-profile.cjs",
     "check:mailer": "node scripts/check-mailer.cjs",
-    "check:google": "node scripts/check-google-auth.cjs"
+    "check:google": "node scripts/check-google-auth.cjs",
+    "check:registration": "node scripts/check-registration.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.98.0",

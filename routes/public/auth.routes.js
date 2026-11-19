@@ -106,16 +106,52 @@ router.post('/google/complete',async(req,res)=>{
 
 
 router.post('/register', async (req, res) => {
-  const { nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password } = req.body;
+  const body = req.body || {};
+  const nombre = body.nombre;
+  const apellidoP = body.apellidoP ?? body.apellidoPaterno;
+  const apellidoM = body.apellidoM ?? body.apellidoMaterno;
+  const fechaNac = body.fechaNac ?? body.fechaNacimiento;
+  const correo = typeof body.correo === 'string' ? body.correo.trim().toLowerCase() : '';
+  const telefono = typeof body.telefono === 'string' ? body.telefono.replace(/\D/g, '') : '';
+  const usuario = typeof body.usuario === 'string' ? body.usuario.trim() : '';
+  const password = body.password;
+  const required = [
+    ['nombre', nombre],
+    ['apellido paterno', apellidoP],
+    ['fecha de nacimiento', fechaNac],
+    ['correo electrónico', correo],
+    ['teléfono', telefono],
+    ['usuario', usuario],
+    ['contraseña', password],
+  ];
+  const missing = required.filter(([, value]) => !value).map(([label]) => label);
 
-  if (!nombre || !apellidoP || !usuario || !correo || !password)
-    return res.status(400).json({ error: 'Faltan campos requeridos' });
+  if (missing.length) {
+    return res.status(400).json({
+      error: `Completa ${missing.length === 1 ? 'el campo' : 'los campos'}: ${missing.join(', ')}.`,
+      fields: missing,
+    });
+  }
   if (!validateEmail(correo))
-    return res.status(400).json({ error: 'Email inválido' });
+    return res.status(400).json({ error: 'Escribe un correo electrónico válido.' });
   if (!validateUsername(usuario))
-    return res.status(400).json({ error: 'Usuario inválido. Debe tener 4-20 caracteres alfanuméricos' });
+    return res.status(400).json({ error: 'El usuario debe tener de 4 a 20 caracteres: letras, números, guion o guion bajo.' });
   if (!validatePassword(password))
-    return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres, una mayúscula, una minúscula, un número y un carácter especial' });
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres, una mayúscula, una minúscula, un número y un símbolo (@$!%*?&).' });
+  if (!/^\d{10}$/.test(telefono))
+    return res.status(400).json({ error: 'El teléfono debe contener exactamente 10 dígitos.' });
+
+  const [birthYear, birthMonth, birthDay] = String(fechaNac).split('-').map(Number);
+  const birthDate = new Date(birthYear, birthMonth - 1, birthDay);
+  const validBirthDate = (
+    /^\d{4}-\d{2}-\d{2}$/.test(fechaNac)
+    && birthDate.getFullYear() === birthYear
+    && birthDate.getMonth() === birthMonth - 1
+    && birthDate.getDate() === birthDay
+    && birthDate < new Date()
+  );
+  if (!validBirthDate)
+    return res.status(400).json({ error: 'Selecciona una fecha de nacimiento válida.' });
 
   const nombreSafe    = sanitizeInput(nombre);
   const apellidoPSafe = sanitizeInput(apellidoP);
@@ -124,22 +160,27 @@ router.post('/register', async (req, res) => {
   const correoSafe    = sanitizeInput(correo);
   const telefonoSafe  = telefono ? sanitizeInput(telefono) : null;
 
+  let connection;
   try {
     const db = await getDB();
+    connection = await db.getConnection();
+    await connection.beginTransaction();
 
-    const [existing] = await db.execute(
+    const [existing] = await connection.execute(
       'SELECT id FROM users WHERE usuario = ? OR correo = ? OR telefono = ?',
       [usuarioSafe, correoSafe, telefonoSafe]
     );
-    if (existing.length > 0)
-      return res.status(400).json({ error: 'Usuario, correo o teléfono ya registrado' });
+    if (existing.length > 0) {
+      await connection.rollback();
+      return res.status(409).json({ error: 'El usuario, correo o teléfono ya está registrado.' });
+    }
 
     const hash = await bcrypt.hash(password, 12);
 
-    const [result] = await db.execute(
+    const [result] = await connection.execute(
       `INSERT INTO users (nombre, apellidoP, apellidoM, fechaNac, correo, telefono, usuario, password, rol, verificado, createdAt, updatedAt)
        VALUES (?,?,?,?,?,?,?,?,?,0,NOW(),NOW())`,
-      [nombreSafe, apellidoPSafe, apellidoMSafe, fechaNac || null, correoSafe, telefonoSafe, usuarioSafe, hash, 'cliente']
+      [nombreSafe, apellidoPSafe, apellidoMSafe, fechaNac, correoSafe, telefonoSafe, usuarioSafe, hash, 'cliente']
     );
 
     const token = jwt.sign({ id: result.insertId, correo: correoSafe }, JWT_SECRET, { expiresIn: '1d' });
@@ -153,10 +194,17 @@ router.post('/register', async (req, res) => {
       html: `<p>Hola ${nombreSafe},</p><p>Para activar tu cuenta, haz clic en el siguiente enlace:</p><a href="${verifyLink}">Verificar correo</a><p>Si no creaste esta cuenta, ignora este correo.</p>`
     });
 
-    res.json({ message: 'Usuario registrado correctamente. Revisa tu correo para activar tu cuenta.' });
+    await connection.commit();
+    res.status(201).json({ message: 'Cuenta creada correctamente. Revisa tu correo para activarla.' });
   } catch (err) {
+    if (connection) await connection.rollback().catch(() => {});
     console.error('Error en registro:', err);
-    res.status(500).json({ error: 'Error registrando usuario' });
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'El usuario, correo o teléfono ya está registrado.' });
+    }
+    res.status(500).json({ error: 'No pudimos crear tu cuenta. Intenta nuevamente en unos minutos.' });
+  } finally {
+    connection?.release();
   }
 });
 
